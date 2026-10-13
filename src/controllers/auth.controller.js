@@ -16,9 +16,9 @@ exports.login = async (req, res) => {
   try {
     const correoLimpio = String(emailIngresado).trim().toLowerCase();
 
-    // 1. Buscar credenciales (insensible a mayúsculas/minúsculas)
+    // 1. Buscar credenciales en la columna 'email' de la tabla 'usuarios'
     const result = await pool.query(
-      'SELECT * FROM usuarios WHERE LOWER(correo) = LOWER($1)',
+      'SELECT * FROM usuarios WHERE LOWER(email) = LOWER($1)',
       [correoLimpio]
     );
 
@@ -62,7 +62,7 @@ exports.login = async (req, res) => {
 
     // 5. Generar Token JWT
     const token = jwt.sign(
-      { id: usuario.id, rol: rolNormalizado, correo: usuario.correo },
+      { id: usuario.id, rol: rolNormalizado, email: usuario.email },
       JWT_SECRET,
       { expiresIn: '8h' }
     );
@@ -74,7 +74,7 @@ exports.login = async (req, res) => {
       usuario: {
         id: usuario.id,
         nombre: usuario.nombre,
-        correo: usuario.correo,
+        email: usuario.email,
         rol: rolNormalizado
       }
     });

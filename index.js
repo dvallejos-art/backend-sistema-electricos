@@ -1,22 +1,22 @@
-// index.js (Ubicado en C:\Users\ACER PREDATOR\Desktop\ingresos-backend\index.js)
+// index.js
 const express = require('express');
 const cors = require('cors');
 
-// Importar rutas desde la carpeta /src
-const authRoutes = require('./src/routes/auth.routes');
-const supervisorRoutes = require('./src/routes/supervisor.routes');
-const tecnicoRoutes = require('./src/routes/tecnico.routes');
-const reportesRoutes = require('./src/routes/reportes.routes');
-const adminRoutes = require('./src/routes/admin.routes');
+// Importar rutas
+const authRoutes = require('./routes/auth.routes');
+const supervisorRoutes = require('./routes/supervisor.routes');
+const tecnicoRoutes = require('./routes/tecnico.routes');
+const reportesRoutes = require('./routes/reportes.routes');
+const adminRoutes = require('./routes/admin.routes');
 
 // Importar middleware centralizado de errores
-const errorHandler = require('./src/middleware/errorHandler');
+const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 
 // Middlewares globales con CORS habilitado
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: '*', // Habilita acceso global para desarrollo y Vercel
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']

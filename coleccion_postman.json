@@ -1,0 +1,185 @@
+{
+  "info": {
+    "name": "API Control de Obra y Avance",
+    "description": "Colección completa de endpoints para Auth, Supervisor, Técnico y Reportes.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000/api",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Autenticación",
+      "item": [
+        {
+          "name": "Login Técnico/Supervisor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.token) {",
+                  "    pm.collectionVariables.set('token', jsonData.token);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cedula\": \"1234567890\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Supervisor",
+      "item": [
+        {
+          "name": "Crear Actividad Catalogo",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"codigo_item\": \"ITEM-02\",\n  \"descripcion\": \"Tendido de Cable de Aluminio #2\",\n  \"unidad_medida\": \"metro\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/supervisor/actividades-catalogo",
+              "host": ["{{baseUrl}}"],
+              "path": ["supervisor", "actividades-catalogo"]
+            }
+          }
+        },
+        {
+          "name": "Asignar Actividad a PAU (Meta)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pau_id\": 1,\n  \"actividad_id\": 1,\n  \"cantidad_presupuestada\": 100.00\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/supervisor/pau-actividades",
+              "host": ["{{baseUrl}}"],
+              "path": ["supervisor", "pau-actividades"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Técnico",
+      "item": [
+        {
+          "name": "Obtener Actividades y Saldos de un PAU",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/pau/1/actividades",
+              "host": ["{{baseUrl}}"],
+              "path": ["pau", "1", "actividades"]
+            }
+          }
+        },
+        {
+          "name": "Registrar Avance de Trabajo",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"pau_id\": 1,\n  \"actividad_id\": 1,\n  \"cantidad_ejecutada\": 5.00,\n  \"observaciones\": \"Registro desde Postman\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/avances",
+              "host": ["{{baseUrl}}"],
+              "path": ["avances"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reportes",
+      "item": [
+        {
+          "name": "Resumen de Avance Porcentual de PAU",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/reportes/pau/1/resumen-avance",
+              "host": ["{{baseUrl}}"],
+              "path": ["reportes", "pau", "1", "resumen-avance"]
+            }
+          }
+        },
+        {
+          "name": "Historial Detallado por Técnico",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+            },
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/reportes/tecnico/1/historial?fecha_inicio=2026-09-01&fecha_fin=2026-09-30",
+              "host": ["{{baseUrl}}"],
+              "path": ["reportes", "tecnico", "1", "historial"],
+              "query": [
+                { "key": "fecha_inicio", "value": "2026-09-01" },
+                { "key": "fecha_fin", "value": "2026-09-30" }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

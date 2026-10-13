@@ -1,0 +1,78 @@
+### 1. Autenticación (Login)
+# @name login
+POST http://localhost:3000/api/auth/login
+Content-Type: application/json
+
+{
+  "cedula": "1234567890"
+}
+
+### Guardar token devuelto por el login
+@authToken = {{login.response.body.token}}
+
+
+### 2. Supervisor - Crear Actividad en Catálogo
+POST http://localhost:3000/api/supervisor/actividades-catalogo
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "codigo_item": "ITEM-02",
+  "descripcion": "Tendido de Cable de Aluminio #2",
+  "unidad_medida": "metro"
+}
+
+
+### 3. Técnico - Obtener Actividades y Saldos de un PAU
+GET http://localhost:3000/api/pau/1/actividades
+Authorization: Bearer {{authToken}}
+
+
+### 4. Técnico - Registrar Avance de Trabajo
+POST http://localhost:3000/api/avances
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "pau_id": 1,
+  "actividad_id": 1,
+  "cantidad_ejecutada": 5.00,
+  "observaciones": "Prueba ejecutada desde REST Client"
+}
+
+
+### 5. Reportes - Resumen de Avance Porcentual de PAU
+GET http://localhost:3000/api/reportes/pau/1/resumen-avance
+Authorization: Bearer {{authToken}}
+
+
+### 6. Reportes - Historial Detallado por Técnico con Filtro de Fechas
+GET http://localhost:3000/api/reportes/tecnico/1/historial?fecha_inicio=2026-09-01&fecha_fin=2026-09-30
+Authorization: Bearer {{authToken}}
+
+### 7. Prueba Error 404 - Ruta Inexistente
+GET http://localhost:3000/api/ruta-que-no-existe
+Authorization: Bearer {{authToken}}
+
+
+### 8. Prueba Error PostgreSQL - Clave Duplicada (23505)
+POST http://localhost:3000/api/supervisor/actividades-catalogo
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "codigo_item": "ITEM-01",
+  "descripcion": "Intento de duplicar el código ITEM-01",
+  "unidad_medida": "unidad"
+}
+
+### 9. Prueba Error de Validación - Express Validator (400)
+POST http://localhost:3000/api/supervisor/actividades-catalogo
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "codigo_item": "",
+  "descripcion": "",
+  "unidad_medida": ""
+}

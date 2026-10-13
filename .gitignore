@@ -1,0 +1,17 @@
+# Variables de entorno y credenciales (¡Nunca subir!)
+.env
+.env.local
+.env.production
+
+# Dependencias de Node.js
+node_modules/
+
+# Registros y logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos del sistema operativo y del editor
+.DS_Store
+Thumbs.db
+.vscode/

@@ -2,21 +2,21 @@
 const express = require('express');
 const cors = require('cors');
 
-// Importar rutas
-const authRoutes = require('./routes/auth.routes');
-const supervisorRoutes = require('./routes/supervisor.routes');
-const tecnicoRoutes = require('./routes/tecnico.routes');
-const reportesRoutes = require('./routes/reportes.routes');
-const adminRoutes = require('./routes/admin.routes');
+// Importar rutas apuntando a /src/
+const authRoutes = require('./src/routes/auth.routes');
+const supervisorRoutes = require('./src/routes/supervisor.routes');
+const tecnicoRoutes = require('./src/routes/tecnico.routes');
+const reportesRoutes = require('./src/routes/reportes.routes');
+const adminRoutes = require('./src/routes/admin.routes');
 
 // Importar middleware centralizado de errores
-const errorHandler = require('./middleware/errorHandler');
+const errorHandler = require('./src/middleware/errorHandler');
 
 const app = express();
 
 // Middlewares globales con CORS habilitado
 app.use(cors({
-  origin: '*', // Habilita acceso global para desarrollo y Vercel
+  origin: '*',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']

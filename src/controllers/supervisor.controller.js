@@ -12,11 +12,11 @@ exports.obtenerProyectos = async (req, res) => {
   }
 };
 
-// 2. Obtener Técnicos
+// 2. Obtener Técnicos (CORREGIDO: email AS correo)
 exports.obtenerTecnicos = async (req, res) => {
   try {
     const result = await pool.query(
-      "SELECT id, nombre, correo FROM usuarios WHERE LOWER(rol) = 'tecnico' ORDER BY nombre ASC"
+      "SELECT id, nombre, email AS correo FROM usuarios WHERE LOWER(rol) IN ('tecnico', 'supervisor') ORDER BY nombre ASC"
     );
     res.json(result.rows);
   } catch (err) {
@@ -93,7 +93,6 @@ exports.obtenerActividades = async (req, res) => {
 };
 
 // 7. Resumen de asignaciones y avance de técnicos
-// 7. Resumen de asignaciones y avance de técnicos (CORREGIDO)
 exports.obtenerAsignaciones = async (req, res) => {
   try {
     const query = `
@@ -110,14 +109,12 @@ exports.obtenerAsignaciones = async (req, res) => {
         ac.id AS actividad_id,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
 
-        -- SUMA ESTRICTA POR ASIGNACIÓN INDIVIDUAL (Evita mezclar avances entre asignaciones)
         COALESCE((
           SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
           FROM registros_avance ra
           WHERE ra.pau_actividad_id = pa.id
         ), 0) AS cantidad_ejecutada,
 
-        -- CÁLCULO % AVANCE BASADO EN ESTA ASIGNACIÓN ESPECÍFICA
         ROUND(
           LEAST(
             (
@@ -381,7 +378,6 @@ exports.eliminarAsignacion = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 1. Obtener datos antes de eliminar para limpiar huérfanos
     const asignacionRes = await client.query(
       'SELECT id, tecnico_id, pau_id, actividad_id FROM pau_actividades WHERE id = $1',
       [id]
@@ -394,7 +390,6 @@ exports.eliminarAsignacion = async (req, res) => {
 
     const { tecnico_id, pau_id, actividad_id } = asignacionRes.rows[0];
 
-    // 2. Eliminar registros de avance asociados (directos y huérfanos)
     await client.query(
       `DELETE FROM registros_avance 
        WHERE pau_actividad_id = $1
@@ -407,7 +402,6 @@ exports.eliminarAsignacion = async (req, res) => {
       [id, pau_id, actividad_id, tecnico_id]
     );
 
-    // 3. Eliminar la asignación
     await client.query('DELETE FROM pau_actividades WHERE id = $1', [id]);
 
     await client.query('COMMIT');

@@ -10,7 +10,7 @@ const bcrypt = require('bcryptjs');
 exports.obtenerUsuarios = async (req, res, next) => {
   try {
     const result = await pool.query(
-      'SELECT id, nombre, correo, rol, creado_en FROM usuarios ORDER BY id DESC'
+      'SELECT id, nombre, email AS correo, rol, creado_en FROM usuarios ORDER BY id DESC'
     );
     res.json(result.rows);
   } catch (error) {
@@ -21,21 +21,22 @@ exports.obtenerUsuarios = async (req, res, next) => {
 
 // Crear un nuevo usuario
 exports.crearUsuario = async (req, res, next) => {
-  const { nombre, correo, password, rol } = req.body;
+  const { nombre, correo, email, password, rol } = req.body;
+  const emailIngresado = email || correo;
 
-  if (!nombre || !correo || !password) {
+  if (!nombre || !emailIngresado || !password) {
     return res.status(400).json({ error: 'Nombre, correo y contraseña son obligatorios.' });
   }
 
   try {
-    const correoClean = correo.trim().toLowerCase();
+    const correoClean = emailIngresado.trim().toLowerCase();
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
 
     const result = await pool.query(
-      `INSERT INTO usuarios (nombre, correo, password_hash, rol) 
+      `INSERT INTO usuarios (nombre, email, password, rol) 
        VALUES ($1, $2, $3, $4) 
-       RETURNING id, nombre, correo, rol`,
+       RETURNING id, nombre, email AS correo, rol`,
       [nombre.trim(), correoClean, passwordHash, (rol || 'supervisor').trim().toLowerCase()]
     );
 
@@ -52,14 +53,15 @@ exports.crearUsuario = async (req, res, next) => {
 // Actualizar usuario por ID
 exports.actualizarUsuario = async (req, res, next) => {
   const { id } = req.params;
-  const { nombre, correo, rol, password } = req.body;
+  const { nombre, correo, email, rol, password } = req.body;
+  const emailIngresado = email || correo;
 
-  if (!nombre || !correo || !rol) {
+  if (!nombre || !emailIngresado || !rol) {
     return res.status(400).json({ error: 'Nombre, correo y rol son obligatorios.' });
   }
 
   try {
-    const correoClean = correo.trim().toLowerCase();
+    const correoClean = emailIngresado.trim().toLowerCase();
     const rolClean = rol.trim().toLowerCase();
     const nombreClean = nombre.trim();
 
@@ -69,16 +71,16 @@ exports.actualizarUsuario = async (req, res, next) => {
 
       const result = await pool.query(
         `UPDATE usuarios 
-         SET nombre = $1, correo = $2, rol = $3, password_hash = $4
-         WHERE id = $5 RETURNING id, nombre, correo, rol`,
+         SET nombre = $1, email = $2, rol = $3, password = $4
+         WHERE id = $5 RETURNING id, nombre, email AS correo, rol`,
         [nombreClean, correoClean, rolClean, passwordHash, id]
       );
       return res.json({ mensaje: 'Usuario actualizado con éxito', usuario: result.rows[0] });
     } else {
       const result = await pool.query(
         `UPDATE usuarios 
-         SET nombre = $1, correo = $2, rol = $3
-         WHERE id = $4 RETURNING id, nombre, correo, rol`,
+         SET nombre = $1, email = $2, rol = $3
+         WHERE id = $4 RETURNING id, nombre, email AS correo, rol`,
         [nombreClean, correoClean, rolClean, id]
       );
 
@@ -277,7 +279,6 @@ exports.guardarPrecioActividad = async (req, res) => {
       );
     }
 
-    // Retorna las tarifas actualizadas para renderizar al instante en pantalla
     const tarifasActualizadas = await pool.query(
       `SELECT 
         pa.id,
@@ -320,9 +321,6 @@ exports.eliminarPrecioActividad = async (req, res, next) => {
 // 4. PROYECTOS / EDIFICIOS
 // ==========================================
 
-// src/controllers/admin.controller.js
-
-// 4. PROYECTOS / EDIFICIOS - Obtener todos con Avance Monetario Real
 exports.obtenerEdificios = async (req, res, next) => {
   try {
     const query = `
@@ -331,7 +329,6 @@ exports.obtenerEdificios = async (req, res, next) => {
         p.nombre,
         CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
 
-        -- 1. Cálculo de Total Ejecutado en Dinero ($) = Cantidad * Precio Unitario
         COALESCE(
           (
             SELECT SUM(
@@ -346,7 +343,6 @@ exports.obtenerEdificios = async (req, res, next) => {
           ), 0
         ) AS total_ejecutado,
 
-        -- 2. Cálculo Porcentual ($ Ejecutado / Presupuesto Total) * 100
         ROUND(
           LEAST(
             (

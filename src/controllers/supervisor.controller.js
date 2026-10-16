@@ -132,6 +132,9 @@ exports.obtenerActividadesPorEdificio = async (req, res) => {
 /**
  * 7. Obtener todas las asignaciones para la tabla del supervisor (Incluye Cuadrilla garantizada)
  */
+/**
+ * 7. Obtener todas las asignaciones para la tabla del supervisor (Corregido sin error 500)
+ */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
@@ -143,17 +146,13 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.id,
         pa.pau_id,
         pa.actividad_id,
-        p.proyecto_id,
         pa.tecnico_id,
         pa.tecnico_secundario_id,
-        u1.nombre AS tecnico,
-        COALESCE(
-          u2.nombre, 
-          (SELECT nombre FROM usuarios WHERE CAST(id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT) LIMIT 1)
-        ) AS tecnico_secundario_nombre,
+        COALESCE(u1.nombre, 'Sin Asignar') AS tecnico,
+        u2.nombre AS tecnico_secundario_nombre,
         pr.nombre AS proyecto,
-        COALESCE(p.nombre, p.codigo) AS departamento,
-        COALESCE(p.nombre, p.codigo) AS pau,
+        COALESCE(p.nombre, p.codigo, 'N/A') AS departamento,
+        COALESCE(p.nombre, p.codigo, 'N/A') AS pau,
         ac.descripcion AS actividad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
@@ -162,18 +161,7 @@ exports.obtenerAsignaciones = async (req, res) => {
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
-            LEFT JOIN paus p_sub ON CAST(p_sub.id AS TEXT) = CAST(ra.pau_id AS TEXT)
-            WHERE (
-              ra.pau_actividad_id = pa.id
-              OR (
-                (
-                  CAST(ra.pau_id AS TEXT) = CAST(pa.pau_id AS TEXT)
-                  OR CAST(ra.pau_id AS TEXT) = CAST(p.codigo AS TEXT)
-                  OR CAST(p_sub.codigo AS TEXT) = CAST(p.codigo AS TEXT)
-                )
-                AND CAST(ra.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
-              )
-            )
+            WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
           ), 0
         ) AS cantidad_ejecutada,
 
@@ -182,9 +170,9 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.fecha_inicio,
         pa.fecha_fin
       FROM pau_actividades pa
-      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
-      JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
-      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      LEFT JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      LEFT JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+      LEFT JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
       LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       ORDER BY pa.id DESC;
@@ -197,7 +185,6 @@ exports.obtenerAsignaciones = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 /**
  * 8. Crear nueva asignación (Guarda tecnico_secundario_id de forma segura)
  */

@@ -2,7 +2,7 @@
 const pool = require('../config/db');
 
 /**
- * 1. Obtener asignaciones para el panel del supervisor
+ * 1. Obtener todas las asignaciones para la tabla del supervisor (Incluye Cuadrilla garantizada)
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -69,7 +69,7 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 2. Crear nueva asignación (Procesa y persiste tecnico_secundario_id)
+ * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id de forma segura)
  */
 exports.asignarTrabajo = async (req, res) => {
   const {
@@ -108,7 +108,7 @@ exports.asignarTrabajo = async (req, res) => {
       RETURNING *;
     `;
 
-    // Normalización estricta del valor secundario a número entero o NULL
+    // Normalización estricta para asegurar guardado de técnico secundario
     let secId = null;
     if (
       tecnico_secundario_id !== null && 

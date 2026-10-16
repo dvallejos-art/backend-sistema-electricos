@@ -19,7 +19,10 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.tecnico_id,
         pa.tecnico_secundario_id,
         u1.nombre AS tecnico,
-        COALESCE(u2.nombre, (SELECT nombre FROM usuarios WHERE id::TEXT = pa.tecnico_secundario_id::TEXT LIMIT 1)) AS tecnico_secundario_nombre,
+        COALESCE(
+          u2.nombre, 
+          (SELECT nombre FROM usuarios WHERE CAST(id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT) LIMIT 1)
+        ) AS tecnico_secundario_nombre,
         pr.nombre AS proyecto,
         COALESCE(p.nombre, p.codigo) AS departamento,
         COALESCE(p.nombre, p.codigo) AS pau,
@@ -32,16 +35,16 @@ exports.obtenerAsignaciones = async (req, res) => {
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
-            LEFT JOIN paus p_sub ON p_sub.id::TEXT = ra.pau_id::TEXT
+            LEFT JOIN paus p_sub ON CAST(p_sub.id AS TEXT) = CAST(ra.pau_id AS TEXT)
             WHERE (
               ra.pau_actividad_id = pa.id
               OR (
                 (
-                  ra.pau_id::TEXT = pa.pau_id::TEXT
-                  OR ra.pau_id::TEXT = p.codigo::TEXT
-                  OR p_sub.codigo::TEXT = p.codigo::TEXT
+                  CAST(ra.pau_id AS TEXT) = CAST(pa.pau_id AS TEXT)
+                  OR CAST(ra.pau_id AS TEXT) = CAST(p.codigo AS TEXT)
+                  OR CAST(p_sub.codigo AS TEXT) = CAST(p.codigo AS TEXT)
                 )
-                AND ra.actividad_id::TEXT = pa.actividad_id::TEXT
+                AND CAST(ra.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
               )
             )
           ), 0
@@ -52,11 +55,11 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.fecha_inicio,
         pa.fecha_fin
       FROM pau_actividades pa
-      JOIN paus p ON p.id::TEXT = pa.pau_id::TEXT
-      JOIN proyectos pr ON pr.id::TEXT = p.proyecto_id::TEXT
-      JOIN actividades_catalogo ac ON ac.id::TEXT = pa.actividad_id::TEXT
-      LEFT JOIN usuarios u1 ON u1.id::TEXT = pa.tecnico_id::TEXT
-      LEFT JOIN usuarios u2 ON u2.id::TEXT = pa.tecnico_secundario_id::TEXT
+      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
+      LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       ORDER BY pa.id DESC;
     `;
 
@@ -69,12 +72,14 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id de forma segura)
+ * 2. Crear nueva asignación (Procesa y persiste tecnico_secundario_id bajo cualquier formato)
  */
 exports.asignarTrabajo = async (req, res) => {
+  // Captura robusta de campos primarios y secundarios de la petición
+  const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
+  const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
+
   const {
-    tecnico_id,
-    tecnico_secundario_id,
     proyecto_id,
     actividad_id,
     pau_id,
@@ -91,6 +96,18 @@ exports.asignarTrabajo = async (req, res) => {
   }
 
   try {
+    // Normalización estricta para asegurar guardado de técnico secundario
+    let secId = null;
+    if (
+      rawSecundario !== null && 
+      rawSecundario !== undefined && 
+      String(rawSecundario).trim() !== '' && 
+      String(rawSecundario) !== 'null'
+    ) {
+      secId = parseInt(rawSecundario, 10);
+      if (isNaN(secId)) secId = null;
+    }
+
     const query = `
       INSERT INTO pau_actividades (
         pau_id,
@@ -107,18 +124,6 @@ exports.asignarTrabajo = async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *;
     `;
-
-    // Normalización estricta para asegurar guardado de técnico secundario
-    let secId = null;
-    if (
-      tecnico_secundario_id !== null && 
-      tecnico_secundario_id !== undefined && 
-      String(tecnico_secundario_id).trim() !== '' && 
-      String(tecnico_secundario_id) !== 'null'
-    ) {
-      secId = parseInt(tecnico_secundario_id, 10);
-      if (isNaN(secId)) secId = null;
-    }
 
     const values = [
       parseInt(pau_id, 10),
@@ -141,14 +146,18 @@ exports.asignarTrabajo = async (req, res) => {
   }
 };
 
+// ALIAS: Redirige llamadas antiguas de rutas que apunten a registrarAvance hacia asignarTrabajo
+exports.registrarAvance = exports.asignarTrabajo;
+
 /**
  * 3. Editar asignación existente
  */
 exports.editarAsignacion = async (req, res) => {
   const { id } = req.params;
+  const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
+  const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
+
   const {
-    tecnico_id,
-    tecnico_secundario_id,
     actividad_id,
     pau_id,
     cantidad,
@@ -160,6 +169,17 @@ exports.editarAsignacion = async (req, res) => {
   } = req.body;
 
   try {
+    let secId = null;
+    if (
+      rawSecundario !== null && 
+      rawSecundario !== undefined && 
+      String(rawSecundario).trim() !== '' && 
+      String(rawSecundario) !== 'null'
+    ) {
+      secId = parseInt(rawSecundario, 10);
+      if (isNaN(secId)) secId = null;
+    }
+
     const query = `
       UPDATE pau_actividades
       SET 
@@ -176,17 +196,6 @@ exports.editarAsignacion = async (req, res) => {
       WHERE id = $11
       RETURNING *;
     `;
-
-    let secId = null;
-    if (
-      tecnico_secundario_id !== null && 
-      tecnico_secundario_id !== undefined && 
-      String(tecnico_secundario_id).trim() !== '' && 
-      String(tecnico_secundario_id) !== 'null'
-    ) {
-      secId = parseInt(tecnico_secundario_id, 10);
-      if (isNaN(secId)) secId = null;
-    }
 
     const values = [
       parseInt(tecnico_id, 10),

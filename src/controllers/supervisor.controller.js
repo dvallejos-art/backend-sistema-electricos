@@ -1,13 +1,9 @@
 // src/controllers/supervisor.controller.js
 const pool = require('../config/db');
 
-/**
- * 1. Obtener todas las asignaciones para la tabla del supervisor (Incluye Cuadrilla garantizada)
- */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
 
   try {
     const query = `
@@ -21,7 +17,7 @@ exports.obtenerAsignaciones = async (req, res) => {
         u1.nombre AS tecnico,
         COALESCE(
           u2.nombre, 
-          (SELECT nombre FROM usuarios WHERE CAST(id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT) LIMIT 1)
+          (SELECT nombre FROM usuarios WHERE id::TEXT = pa.tecnico_secundario_id::TEXT LIMIT 1)
         ) AS tecnico_secundario_nombre,
         pr.nombre AS proyecto,
         COALESCE(p.nombre, p.codigo) AS departamento,
@@ -30,21 +26,20 @@ exports.obtenerAsignaciones = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         
-        -- Cantidad ejecutada real registrada por el técnico
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
-            LEFT JOIN paus p_sub ON CAST(p_sub.id AS TEXT) = CAST(ra.pau_id AS TEXT)
+            LEFT JOIN paus p_sub ON p_sub.id::TEXT = ra.pau_id::TEXT
             WHERE (
               ra.pau_actividad_id = pa.id
               OR (
                 (
-                  CAST(ra.pau_id AS TEXT) = CAST(pa.pau_id AS TEXT)
-                  OR CAST(ra.pau_id AS TEXT) = CAST(p.codigo AS TEXT)
-                  OR CAST(p_sub.codigo AS TEXT) = CAST(p.codigo AS TEXT)
+                  ra.pau_id::TEXT = pa.pau_id::TEXT
+                  OR ra.pau_id::TEXT = p.codigo::TEXT
+                  OR p_sub.codigo::TEXT = p.codigo::TEXT
                 )
-                AND CAST(ra.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+                AND ra.actividad_id::TEXT = pa.actividad_id::TEXT
               )
             )
           ), 0
@@ -55,11 +50,11 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.fecha_inicio,
         pa.fecha_fin
       FROM pau_actividades pa
-      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
-      JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
-      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
-      LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
-      LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      JOIN paus p ON p.id::TEXT = pa.pau_id::TEXT
+      JOIN proyectos pr ON pr.id::TEXT = p.proyecto_id::TEXT
+      JOIN actividades_catalogo ac ON ac.id::TEXT = pa.actividad_id::TEXT
+      LEFT JOIN usuarios u1 ON u1.id::TEXT = pa.tecnico_id::TEXT
+      LEFT JOIN usuarios u2 ON u2.id::TEXT = pa.tecnico_secundario_id::TEXT
       ORDER BY pa.id DESC;
     `;
 
@@ -71,11 +66,7 @@ exports.obtenerAsignaciones = async (req, res) => {
   }
 };
 
-/**
- * 2. Crear nueva asignación (Procesa y persiste tecnico_secundario_id bajo cualquier formato)
- */
 exports.asignarTrabajo = async (req, res) => {
-  // Captura robusta de campos primarios y secundarios de la petición
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
 
@@ -96,7 +87,6 @@ exports.asignarTrabajo = async (req, res) => {
   }
 
   try {
-    // Normalización estricta para asegurar guardado de técnico secundario
     let secId = null;
     if (
       rawSecundario !== null && 
@@ -139,19 +129,15 @@ exports.asignarTrabajo = async (req, res) => {
     ];
 
     const result = await pool.query(query, values);
-    res.json({ mensaje: 'Trabajo asignado exitosamente.', asignacion: result.rows[0] });
+    res.json({ mensaje: 'Nueva asignación guardada con éxito.', asignacion: result.rows[0] });
   } catch (err) {
     console.error('Error al asignar trabajo:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-// ALIAS: Redirige llamadas antiguas de rutas que apunten a registrarAvance hacia asignarTrabajo
 exports.registrarAvance = exports.asignarTrabajo;
 
-/**
- * 3. Editar asignación existente
- */
 exports.editarAsignacion = async (req, res) => {
   const { id } = req.params;
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
@@ -212,10 +198,6 @@ exports.editarAsignacion = async (req, res) => {
     ];
 
     const result = await pool.query(query, values);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Asignación no encontrada.' });
-    }
-
     res.json({ mensaje: 'Asignación actualizada correctamente.', asignacion: result.rows[0] });
   } catch (err) {
     console.error('Error al actualizar asignación:', err);
@@ -223,9 +205,6 @@ exports.editarAsignacion = async (req, res) => {
   }
 };
 
-/**
- * 4. Eliminar asignación
- */
 exports.eliminarAsignacion = async (req, res) => {
   const { id } = req.params;
   try {

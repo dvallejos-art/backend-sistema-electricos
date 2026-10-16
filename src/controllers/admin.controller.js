@@ -1,376 +1,429 @@
-// src/controllers/admin.controller.js
+// src/controllers/supervisor.controller.js
 const pool = require('../config/db');
-const bcrypt = require('bcryptjs');
 
-// ==========================================
-// 1. GESTIÓN DE USUARIOS
-// ==========================================
+// 1. Obtener Proyectos
+exports.obtenerProyectos = async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, nombre FROM proyectos ORDER BY nombre ASC');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener proyectos:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
 
-// Obtener todos los usuarios
-exports.obtenerUsuarios = async (req, res, next) => {
+// 2. Obtener Técnicos (CORREGIDO: email AS correo)
+exports.obtenerTecnicos = async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, nombre, email AS correo, rol, creado_en FROM usuarios ORDER BY id DESC'
+      "SELECT id, nombre, email AS correo FROM usuarios WHERE LOWER(rol) IN ('tecnico', 'supervisor') ORDER BY nombre ASC"
     );
     res.json(result.rows);
-  } catch (error) {
-    console.error('Error al obtener usuarios:', error);
-    next(error);
+  } catch (err) {
+    console.error('Error al obtener técnicos:', err);
+    res.status(500).json({ error: err.message });
   }
 };
 
-// Crear un nuevo usuario
-exports.crearUsuario = async (req, res, next) => {
-  const { nombre, correo, email, password, rol } = req.body;
-  const emailIngresado = email || correo;
-
-  if (!nombre || !emailIngresado || !password) {
-    return res.status(400).json({ error: 'Nombre, correo y contraseña son obligatorios.' });
-  }
-
+// 3. Obtener PAUs de un Proyecto
+exports.obtenerPausPorProyecto = async (req, res) => {
   try {
-    const correoClean = emailIngresado.trim().toLowerCase();
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(password, salt);
-
+    const { idProyecto } = req.params;
     const result = await pool.query(
-      `INSERT INTO usuarios (nombre, email, password, rol) 
-       VALUES ($1, $2, $3, $4) 
-       RETURNING id, nombre, email AS correo, rol`,
-      [nombre.trim(), correoClean, passwordHash, (rol || 'supervisor').trim().toLowerCase()]
-    );
-
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    if (error.code === '23505') {
-      return res.status(400).json({ error: 'El correo electrónico ya está registrado.' });
-    }
-    console.error('Error al crear usuario:', error);
-    next(error);
-  }
-};
-
-// Actualizar usuario por ID
-exports.actualizarUsuario = async (req, res, next) => {
-  const { id } = req.params;
-  const { nombre, correo, email, rol, password } = req.body;
-  const emailIngresado = email || correo;
-
-  if (!nombre || !emailIngresado || !rol) {
-    return res.status(400).json({ error: 'Nombre, correo y rol son obligatorios.' });
-  }
-
-  try {
-    const correoClean = emailIngresado.trim().toLowerCase();
-    const rolClean = rol.trim().toLowerCase();
-    const nombreClean = nombre.trim();
-
-    if (password && password.trim() !== '') {
-      const salt = await bcrypt.genSalt(10);
-      const passwordHash = await bcrypt.hash(password, salt);
-
-      const result = await pool.query(
-        `UPDATE usuarios 
-         SET nombre = $1, email = $2, rol = $3, password = $4
-         WHERE id = $5 RETURNING id, nombre, email AS correo, rol`,
-        [nombreClean, correoClean, rolClean, passwordHash, id]
-      );
-      return res.json({ mensaje: 'Usuario actualizado con éxito', usuario: result.rows[0] });
-    } else {
-      const result = await pool.query(
-        `UPDATE usuarios 
-         SET nombre = $1, email = $2, rol = $3
-         WHERE id = $4 RETURNING id, nombre, email AS correo, rol`,
-        [nombreClean, correoClean, rolClean, id]
-      );
-
-      if (result.rowCount === 0) {
-        return res.status(404).json({ error: 'Usuario no encontrado.' });
-      }
-
-      return res.json({ mensaje: 'Usuario actualizado con éxito', usuario: result.rows[0] });
-    }
-  } catch (error) {
-    if (error.code === '23505') {
-      return res.status(400).json({ error: 'El correo electrónico ya está registrado por otro usuario.' });
-    }
-    next(error);
-  }
-};
-
-// Eliminar usuario por ID
-exports.eliminarUsuario = async (req, res, next) => {
-  const { id } = req.params;
-  try {
-    const result = await pool.query('DELETE FROM usuarios WHERE id = $1 RETURNING *', [id]);
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Usuario no encontrado.' });
-    }
-    res.json({ mensaje: 'Usuario eliminado con éxito.' });
-  } catch (error) {
-    console.error('Error al eliminar usuario:', error);
-    next(error);
-  }
-};
-
-// ==========================================
-// 2. CATÁLOGO DE ACTIVIDADES / RUBROS
-// ==========================================
-
-// Obtener catálogo completo de actividades
-exports.obtenerActividades = async (req, res, next) => {
-  try {
-    const result = await pool.query(
-      `SELECT id, COALESCE(codigo_item, 'RUB-00') AS codigo_item, descripcion, unidad_medida 
-       FROM actividades_catalogo 
-       ORDER BY descripcion ASC`
+      'SELECT id, nombre, codigo FROM paus WHERE proyecto_id = $1 ORDER BY nombre ASC',
+      [idProyecto]
     );
     res.json(result.rows);
-  } catch (error) {
-    console.error('Error al obtener actividades:', error);
-    next(error);
+  } catch (err) {
+    console.error('Error al obtener PAUs por proyecto:', err);
+    res.status(500).json({ error: err.message });
   }
 };
 
-// Crear una nueva actividad en el catálogo
-exports.crearActividad = async (req, res, next) => {
-  const { descripcion, unidad_medida, codigo_item } = req.body;
-
-  if (!descripcion) {
-    return res.status(400).json({ error: 'La descripción de la actividad es obligatoria.' });
+// 4. Crear o devolver PAU existente
+exports.crearODevolverPau = async (req, res) => {
+  const { proyecto_id, nombre } = req.body;
+  if (!proyecto_id || !nombre) {
+    return res.status(400).json({ error: 'El ID del proyecto y el nombre del PAU son requeridos.' });
   }
 
   try {
     const existe = await pool.query(
-      'SELECT id FROM actividades_catalogo WHERE LOWER(descripcion) = LOWER($1)',
-      [descripcion.trim()]
+      'SELECT id, nombre FROM paus WHERE proyecto_id = $1 AND LOWER(nombre) = LOWER($2)',
+      [proyecto_id, nombre.trim()]
     );
-
     if (existe.rows.length > 0) {
-      return res.status(400).json({ error: 'La actividad ya existe en el catálogo.' });
+      return res.json(existe.rows[0]);
     }
-
-    const codigoFinal = codigo_item || `RUB-${Date.now().toString().slice(-5)}`;
-
-    const nueva = await pool.query(
-      `INSERT INTO actividades_catalogo (codigo_item, descripcion, unidad_medida) 
-       VALUES ($1, $2, $3) 
-       RETURNING id, codigo_item, descripcion, unidad_medida`,
-      [codigoFinal, descripcion.trim(), unidad_medida || 'Unidad']
+    const nuevo = await pool.query(
+      'INSERT INTO paus (proyecto_id, nombre, codigo) VALUES ($1, $2, $2) RETURNING id, nombre',
+      [proyecto_id, nombre.trim()]
     );
-
-    res.status(201).json(nueva.rows[0]);
-  } catch (error) {
-    console.error('Error al crear actividad:', error);
-    next(error);
+    res.json(nuevo.rows[0]);
+  } catch (err) {
+    console.error('Error al crear/devolver PAU:', err);
+    res.status(500).json({ error: err.message });
   }
 };
 
-// Actualizar una actividad existente
-exports.actualizarActividad = async (req, res, next) => {
-  const { id } = req.params;
-  const { descripcion, unidad_medida, codigo_item } = req.body;
-
-  if (!descripcion) {
-    return res.status(400).json({ error: 'La descripción es obligatoria.' });
-  }
-
+// 5. Obtener actividades por nombre de edificio
+exports.obtenerActividadesPorEdificio = async (req, res) => {
   try {
     const result = await pool.query(
-      `UPDATE actividades_catalogo 
-       SET descripcion = $1, unidad_medida = $2, codigo_item = COALESCE($3, codigo_item) 
-       WHERE id = $4 RETURNING *`,
-      [descripcion.trim(), unidad_medida || 'Unidad', codigo_item, id]
+      'SELECT id, descripcion AS nombre, unidad_medida FROM actividades_catalogo ORDER BY descripcion ASC'
     );
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Actividad no encontrada.' });
-    }
-
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('Error al actualizar actividad:', error);
-    next(error);
-  }
-};
-
-// Eliminar una actividad
-exports.eliminarActividad = async (req, res, next) => {
-  const { id } = req.params;
-
-  try {
-    const result = await pool.query('DELETE FROM actividades_catalogo WHERE id = $1 RETURNING *', [id]);
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Actividad no encontrada.' });
-    }
-
-    res.json({ mensaje: 'Actividad eliminada con éxito.' });
-  } catch (error) {
-    if (error.code === '23503') {
-      return res.status(400).json({
-        error: 'No se puede eliminar la actividad porque ya tiene asignaciones vinculadas.'
-      });
-    }
-    next(error);
-  }
-};
-
-// ==========================================
-// 3. TARIFAS Y PRECIOS DE ACTIVIDADES
-// ==========================================
-
-// Obtener precios configurados para una actividad
-exports.obtenerPreciosActividad = async (req, res) => {
-  const { id } = req.params; // actividad_id
-
-  try {
-    const query = `
-      SELECT 
-        pa.id,
-        pa.actividad_id,
-        pa.proyecto_id,
-        pa.precio_unitario,
-        COALESCE(p.nombre, 'Sin Edificio') AS edificio,
-        COALESCE(p.nombre, 'Sin Edificio') AS edificio_nombre,
-        COALESCE(p.nombre, 'Sin Edificio') AS proyecto_nombre
-      FROM precios_actividades pa
-      LEFT JOIN proyectos p ON pa.proyecto_id = p.id
-      WHERE pa.actividad_id = $1
-      ORDER BY pa.id DESC
-    `;
-    const result = await pool.query(query, [id]);
     res.json(result.rows);
-  } catch (error) {
-    console.error('Error al obtener precios de la actividad:', error);
-    res.status(500).json({ error: 'Error al consultar las tarifas en la base de datos.' });
+  } catch (err) {
+    console.error('Error al obtener actividades por edificio:', err);
+    res.status(500).json({ error: err.message });
   }
 };
 
-// Guardar o actualizar precio unitario de actividad por proyecto
-exports.guardarPrecioActividad = async (req, res) => {
-  const { id } = req.params; // actividad_id
-  const { proyecto_id, edificio_id, precio_unitario } = req.body;
-
-  const targetProyectoId = parseInt(proyecto_id || edificio_id, 10);
-  const precioFinal = parseFloat(precio_unitario);
-
-  if (!targetProyectoId || isNaN(targetProyectoId) || isNaN(precioFinal)) {
-    return res.status(400).json({ 
-      error: 'El proyecto (ID) y el precio unitario válido son obligatorios.' 
-    });
-  }
-
+// 6. Catálogo general de actividades
+exports.obtenerActividades = async (req, res) => {
   try {
-    const existe = await pool.query(
-      'SELECT id FROM precios_actividades WHERE actividad_id = $1 AND proyecto_id = $2',
-      [id, targetProyectoId]
+    const result = await pool.query(
+      'SELECT id, codigo_item, descripcion, unidad_medida FROM actividades_catalogo ORDER BY descripcion ASC'
     );
-
-    if (existe.rows.length > 0) {
-      await pool.query(
-        'UPDATE precios_actividades SET precio_unitario = $1 WHERE id = $2',
-        [precioFinal, existe.rows[0].id]
-      );
-    } else {
-      await pool.query(
-        'INSERT INTO precios_actividades (actividad_id, proyecto_id, precio_unitario) VALUES ($1, $2, $3)',
-        [id, targetProyectoId, precioFinal]
-      );
-    }
-
-    const tarifasActualizadas = await pool.query(
-      `SELECT 
-        pa.id,
-        pa.actividad_id,
-        pa.proyecto_id,
-        pa.precio_unitario,
-        COALESCE(p.nombre, 'Sin Edificio') AS edificio,
-        COALESCE(p.nombre, 'Sin Edificio') AS edificio_nombre,
-        COALESCE(p.nombre, 'Sin Edificio') AS proyecto_nombre
-      FROM precios_actividades pa
-      LEFT JOIN proyectos p ON pa.proyecto_id = p.id
-      WHERE pa.actividad_id = $1
-      ORDER BY pa.id DESC`,
-      [id]
-    );
-
-    return res.json(tarifasActualizadas.rows);
-  } catch (error) {
-    console.error('Error al guardar precio de actividad:', error);
-    return res.status(500).json({ error: 'Error en la base de datos al guardar la tarifa.' });
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener catálogo de actividades:', err);
+    res.status(500).json({ error: err.message });
   }
 };
 
-// Eliminar tarifa por su ID
-exports.eliminarPrecioActividad = async (req, res, next) => {
-  const { precioId } = req.params;
-  try {
-    const result = await pool.query('DELETE FROM precios_actividades WHERE id = $1 RETURNING *', [precioId]);
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Tarifa no encontrada.' });
-    }
-    res.json({ mensaje: 'Tarifa eliminada con éxito.' });
-  } catch (error) {
-    console.error('Error al eliminar tarifa:', error);
-    next(error);
-  }
-};
-
-// ==========================================
-// 4. PROYECTOS / EDIFICIOS
-// ==========================================
-
-exports.obtenerEdificios = async (req, res, next) => {
+// 7. Resumen de asignaciones y avance de técnicos (INCLUYE TÉCNICO SECUNDARIO / CUADRILLA)
+exports.obtenerAsignaciones = async (req, res) => {
   try {
     const query = `
       SELECT 
-        p.id,
-        p.nombre,
-        CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
+        pa.id,
+        COALESCE(u1.nombre, 'Sin asignar') AS tecnico,
+        u1.id AS tecnico_id,
+        pa.tecnico_secundario_id,
+        u2.nombre AS tecnico_secundario_nombre,
+        p.nombre AS proyecto,
+        p.id AS proyecto_id,
+        COALESCE(pau.nombre, pau.codigo) AS pau,
+        COALESCE(pau.nombre, pau.codigo) AS departamento,
+        pau.id AS pau_id,
+        ac.descripcion AS actividad,
+        ac.id AS actividad_id,
+        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
 
-        COALESCE(
-          (
-            SELECT SUM(
-              CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0)
-            )
-            FROM registros_avance ra
-            JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
-            LEFT JOIN precios_actividades pa_precio 
-              ON CAST(pa_precio.actividad_id AS TEXT) = CAST(ra.actividad_id AS TEXT) 
-             AND CAST(pa_precio.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
-            WHERE pau.proyecto_id = p.id
-          ), 0
-        ) AS total_ejecutado,
+        COALESCE((
+          SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+          FROM registros_avance ra
+          WHERE ra.pau_actividad_id = pa.id
+        ), 0) AS cantidad_ejecutada,
 
         ROUND(
           LEAST(
             (
-              COALESCE(
-                (
-                  SELECT SUM(
-                    CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0)
-                  )
-                  FROM registros_avance ra
-                  JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
-                  LEFT JOIN precios_actividades pa_precio 
-                    ON CAST(pa_precio.actividad_id AS TEXT) = CAST(ra.actividad_id AS TEXT) 
-                   AND CAST(pa_precio.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
-                  WHERE pau.proyecto_id = p.id
-                ), 0
-              ) / NULLIF(CAST(p.presupuesto_total AS NUMERIC), 0)
+              COALESCE((
+                SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+                FROM registros_avance ra
+                WHERE ra.pau_actividad_id = pa.id
+              ), 0) / NULLIF(CAST(pa.cantidad_presupuestada AS NUMERIC), 0)
             ) * 100, 100
           ), 2
-        ) AS porcentaje_avance
+        ) AS porcentaje_avance,
 
-      FROM proyectos p
-      ORDER BY p.id ASC;
+        TO_CHAR(pa.fecha_inicio, 'DD/MM/YYYY') AS fecha_inicio,
+        TO_CHAR(pa.fecha_fin, 'DD/MM/YYYY') AS fecha_fin,
+        pa.observaciones
+
+      FROM pau_actividades pa
+      LEFT JOIN usuarios u1 ON pa.tecnico_id = u1.id
+      LEFT JOIN usuarios u2 ON pa.tecnico_secundario_id = u2.id
+      LEFT JOIN paus pau ON pa.pau_id = pau.id
+      LEFT JOIN proyectos p ON pau.proyecto_id = p.id
+      LEFT JOIN actividades_catalogo ac ON pa.actividad_id = ac.id
+      ORDER BY pa.id DESC;
     `;
-
     const result = await pool.query(query);
     res.json(result.rows);
-  } catch (error) {
-    console.error('Error al obtener edificios con avance real:', error);
-    next(error);
+  } catch (err) {
+    console.error('Error al obtener asignaciones:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// 8. Registrar una NUEVA asignación independiente (SOPORTA CUADRILLA)
+exports.registrarAvance = async (req, res) => {
+  const { 
+    tecnico_id, 
+    tecnico_secundario_id,
+    pau_id, 
+    actividad_id, 
+    cantidad, 
+    fecha_inicio, 
+    fecha_fin, 
+    observaciones 
+  } = req.body;
+
+  if (!tecnico_id || !pau_id || !actividad_id) {
+    return res.status(400).json({ 
+      error: 'Debe seleccionar obligatoriamente un técnico, un departamento/PAU y una actividad.' 
+    });
+  }
+
+  try {
+    const insertQuery = `
+      INSERT INTO pau_actividades (
+        tecnico_id, 
+        tecnico_secundario_id,
+        pau_id, 
+        actividad_id, 
+        cantidad_presupuestada, 
+        fecha_inicio, 
+        fecha_fin, 
+        observaciones
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *
+    `;
+    
+    const result = await pool.query(insertQuery, [
+      tecnico_id, 
+      tecnico_secundario_id || null,
+      pau_id, 
+      actividad_id, 
+      cantidad || 0, 
+      fecha_inicio || null, 
+      fecha_fin || null, 
+      observaciones || ''
+    ]);
+
+    res.json({ mensaje: 'Nueva asignación guardada con éxito.', asignacion: result.rows[0] });
+  } catch (err) {
+    console.error('Error al registrar asignación:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// 9. Métricas: Avance Por Departamento (PAU)
+exports.obtenerAvancePorDepartamento = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        p.nombre AS proyecto,
+        COALESCE(pau.nombre, pau.codigo) AS departamento,
+        SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS total_asignado,
+        COALESCE(
+          SUM(
+            (
+              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              FROM registros_avance ra
+              WHERE ra.pau_actividad_id = pa.id
+                 OR (
+                    ra.pau_actividad_id IS NULL 
+                    AND ra.pau_id = pa.pau_id 
+                    AND ra.actividad_id = pa.actividad_id
+                 )
+            )
+          ), 0
+        ) AS total_ejecutado,
+        ROUND(
+          LEAST(
+            (
+              COALESCE(
+                SUM(
+                  (
+                    SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+                    FROM registros_avance ra
+                    WHERE ra.pau_actividad_id = pa.id
+                       OR (
+                          ra.pau_actividad_id IS NULL 
+                          AND ra.pau_id = pa.pau_id 
+                          AND ra.actividad_id = pa.actividad_id
+                       )
+                  )
+                ), 0
+              ) / NULLIF(SUM(CAST(pa.cantidad_presupuestada AS NUMERIC)), 0)
+            ) * 100, 100
+          ), 2
+        ) AS porcentaje_dpto
+      FROM pau_actividades pa
+      JOIN paus pau ON pa.pau_id = pau.id
+      JOIN proyectos p ON pau.proyecto_id = p.id
+      GROUP BY p.nombre, pau.nombre, pau.codigo
+      ORDER BY p.nombre, departamento;
+    `;
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener avance por dpto:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// 10. Métricas: Avance General Por Edificio/Proyecto
+exports.obtenerAvancePorEdificio = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        p.nombre AS proyecto_edificio,
+        SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS total_asignado,
+        COALESCE(
+          SUM(
+            (
+              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              FROM registros_avance ra
+              WHERE ra.pau_actividad_id = pa.id
+                 OR (
+                    ra.pau_actividad_id IS NULL 
+                    AND ra.pau_id = pa.pau_id 
+                    AND ra.actividad_id = pa.actividad_id
+                 )
+            )
+          ), 0
+        ) AS total_ejecutado,
+        ROUND(
+          LEAST(
+            (
+              COALESCE(
+                SUM(
+                  (
+                    SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+                    FROM registros_avance ra
+                    WHERE ra.pau_actividad_id = pa.id
+                       OR (
+                          ra.pau_actividad_id IS NULL 
+                          AND ra.pau_id = pa.pau_id 
+                          AND ra.actividad_id = pa.actividad_id
+                       )
+                  )
+                ), 0
+              ) / NULLIF(SUM(CAST(pa.cantidad_presupuestada AS NUMERIC)), 0)
+            ) * 100, 100
+          ), 2
+        ) AS porcentaje_edificio
+      FROM pau_actividades pa
+      JOIN paus pau ON pa.pau_id = pau.id
+      JOIN proyectos p ON pau.proyecto_id = p.id
+      GROUP BY p.nombre
+      ORDER BY p.nombre;
+    `;
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener avance por edificio:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// 11. Editar asignación existente (SOPORTA TÉCNICO SECUNDARIO / AYUDANTE)
+exports.editarAsignacion = async (req, res) => {
+  const { id } = req.params;
+  const { 
+    tecnico_id, 
+    tecnico_secundario_id,
+    pau_id, 
+    actividad_id, 
+    cantidad, 
+    fecha_inicio, 
+    fecha_fin, 
+    observaciones 
+  } = req.body;
+
+  if (!id) {
+    return res.status(400).json({ error: 'El ID de la asignación es requerido.' });
+  }
+
+  try {
+    const updateQuery = `
+      UPDATE pau_actividades 
+      SET 
+        tecnico_id = COALESCE($1, tecnico_id),
+        tecnico_secundario_id = $2,
+        pau_id = COALESCE($3, pau_id),
+        actividad_id = COALESCE($4, actividad_id),
+        cantidad_presupuestada = COALESCE($5, cantidad_presupuestada),
+        fecha_inicio = $6,
+        fecha_fin = $7,
+        observaciones = COALESCE($8, observaciones)
+      WHERE id = $9
+      RETURNING *;
+    `;
+
+    const result = await pool.query(updateQuery, [
+      tecnico_id || null,
+      tecnico_secundario_id || null,
+      pau_id || null,
+      actividad_id || null,
+      cantidad || null,
+      fecha_inicio || null,
+      fecha_fin || null,
+      observaciones !== undefined ? observaciones : null,
+      id
+    ]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'La asignación no existe o fue eliminada.' });
+    }
+
+    res.json({ 
+      mensaje: 'Asignación actualizada correctamente.', 
+      asignacion: result.rows[0] 
+    });
+
+  } catch (err) {
+    console.error('Error al editar asignación:', err);
+    res.status(500).json({ error: 'Error interno del servidor al actualizar asignación.' });
+  }
+};
+
+// 12. Eliminar asignación (Limpieza en cascada segura con transacción)
+exports.eliminarAsignacion = async (req, res) => {
+  const { id } = req.params;
+
+  if (!id) {
+    return res.status(400).json({ error: 'El ID de la asignación es requerido.' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const asignacionRes = await client.query(
+      'SELECT id, tecnico_id, pau_id, actividad_id FROM pau_actividades WHERE id = $1',
+      [id]
+    );
+
+    if (asignacionRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'La asignación no existe o ya fue eliminada.' });
+    }
+
+    const { tecnico_id, pau_id, actividad_id } = asignacionRes.rows[0];
+
+    await client.query(
+      `DELETE FROM registros_avance 
+       WHERE pau_actividad_id = $1
+          OR (
+               pau_actividad_id IS NULL 
+           AND pau_id = $2 
+           AND actividad_id = $3 
+           AND (tecnico_id = $4 OR $4 IS NULL)
+          )`,
+      [id, pau_id, actividad_id, tecnico_id]
+    );
+
+    await client.query('DELETE FROM pau_actividades WHERE id = $1', [id]);
+
+    await client.query('COMMIT');
+
+    res.json({ 
+      mensaje: 'Asignación y todos sus registros de avance asociados fueron eliminados correctamente.' 
+    });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al eliminar asignación:', err);
+    res.status(500).json({ error: 'Error interno del servidor al eliminar asignación.' });
+  } finally {
+    client.release();
   }
 };

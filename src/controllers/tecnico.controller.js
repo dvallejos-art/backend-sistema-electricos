@@ -2,7 +2,7 @@
 const pool = require('../config/db');
 
 /**
- * 1. Obtener actividades asignadas con Saldo Disponible Real
+ * 1. Obtener actividades asignadas con Saldo Disponible Real y datos de cuadrilla
  */
 exports.obtenerActividadesPauTecnico = async (req, res) => {
   const pau_id_param = req.params.pau_id;
@@ -14,12 +14,16 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         pa.id AS pau_actividad_id,
         pa.pau_id,
         pa.actividad_id,
+        pa.tecnico_id,
+        pa.tecnico_secundario_id,
+        u1.nombre AS tecnico_lider_nombre,
+        u2.nombre AS tecnico_secundario_nombre,
         ac.descripcion AS actividad,
         ac.unidad_medida,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
 
-        -- Suma de avances buscando por ID real, por código de PAU o asignación directa
+        -- Suma de avances
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -39,7 +43,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
           ), 0
         ) AS cantidad_ejecutada,
 
-        -- Saldo Restante Disponible (Presupuestado - Ejecutado)
+        -- Saldo Restante Disponible
         GREATEST(
           CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(
             (
@@ -64,18 +68,24 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       JOIN actividades_catalogo ac ON CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
+      LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
+      LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       WHERE (
         CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
         OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
         OR CAST(p.nombre AS TEXT) = CAST($1 AS TEXT)
       )
-      AND ($2::TEXT IS NULL OR $2::TEXT = '' OR CAST(pa.tecnico_id AS TEXT) = CAST($2 AS TEXT))
+      AND (
+        $2::TEXT IS NULL 
+        OR $2::TEXT = '' 
+        OR CAST(pa.tecnico_id AS TEXT) = CAST($2 AS TEXT)
+        OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($2 AS TEXT)
+      )
       ORDER BY ac.descripcion ASC;
     `;
 
     const result = await pool.query(query, [pau_id_param, tecnico_id]);
 
-    // Asignar el campo disponibleReal explícito para el frontend
     const mapeados = result.rows.map(row => ({
       ...row,
       disponibleReal: parseFloat(row.cantidad_disponible || 0)
@@ -110,6 +120,8 @@ exports.registrarAvanceDiario = async (req, res) => {
         pa.id AS pau_actividad_id,
         pa.pau_id AS real_pau_id,
         pa.actividad_id AS actividad_catalogo_id,
+        pa.tecnico_id,
+        pa.tecnico_secundario_id,
         ROUND(
           CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(
             (
@@ -153,10 +165,17 @@ exports.registrarAvanceDiario = async (req, res) => {
       return res.status(404).json({ error: 'No existe asignación para esta actividad.' });
     }
 
-    const realPauActividadId = checkResult.rows[0].pau_actividad_id;
-    const realPauId = checkResult.rows[0].real_pau_id;
-    const idActividadCatalogo = checkResult.rows[0].actividad_catalogo_id;
-    const disponible = parseFloat(checkResult.rows[0].disponible);
+    const asignacion = checkResult.rows[0];
+
+    // Bloqueo de seguridad en el backend: solo el técnico líder puede registrar avances
+    if (asignacion.tecnico_secundario_id && String(asignacion.tecnico_secundario_id) === String(tecnicoId)) {
+      return res.status(403).json({ error: 'Acción denegada: Solo el Técnico Líder de la cuadrilla puede registrar avances.' });
+    }
+
+    const realPauActividadId = asignacion.pau_actividad_id;
+    const realPauId = asignacion.real_pau_id;
+    const idActividadCatalogo = asignacion.actividad_catalogo_id;
+    const disponible = parseFloat(asignacion.disponible);
 
     if (cantIngresada > disponible + 0.001) {
       return res.status(400).json({
@@ -212,7 +231,8 @@ exports.obtenerMisAvances = async (req, res) => {
         COALESCE(act.descripcion, pa_act.descripcion, 'Actividad') AS actividad,
         COALESCE(act.unidad_medida, pa_act.unidad_medida, '') AS unidad_medida,
         CAST(ra.cantidad_ejecutada AS NUMERIC) AS cantidad,
-        ra.observaciones
+        ra.observaciones,
+        CASE WHEN pa.tecnico_secundario_id IS NOT NULL THEN true ELSE false END AS es_cuadrilla
       FROM registros_avance ra
       LEFT JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
       LEFT JOIN proyectos p ON p.id = pau.proyecto_id

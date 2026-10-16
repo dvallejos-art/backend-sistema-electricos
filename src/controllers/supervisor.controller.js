@@ -2,7 +2,7 @@
 const pool = require('../config/db');
 
 /**
- * 1. Obtener todas las asignaciones para la tabla del supervisor (Incluye Cuadrilla)
+ * 1. Obtener todas las asignaciones para la tabla del supervisor (Incluye Cuadrilla visible)
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -19,7 +19,7 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.tecnico_id,
         pa.tecnico_secundario_id,
         u1.nombre AS tecnico,
-        u2.nombre AS tecnico_secundario_nombre,
+        COALESCE(u2.nombre, (SELECT nombre FROM usuarios WHERE id::TEXT = pa.tecnico_secundario_id::TEXT LIMIT 1)) AS tecnico_secundario_nombre,
         pr.nombre AS proyecto,
         COALESCE(p.nombre, p.codigo) AS departamento,
         COALESCE(p.nombre, p.codigo) AS pau,
@@ -27,21 +27,21 @@ exports.obtenerAsignaciones = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         
-        -- Cantidad ejecutada real registrada
+        -- Cantidad ejecutada real registrada por el técnico
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
-            LEFT JOIN paus p_sub ON p_sub.id = ra.pau_id
+            LEFT JOIN paus p_sub ON p_sub.id::TEXT = ra.pau_id::TEXT
             WHERE (
               ra.pau_actividad_id = pa.id
               OR (
                 (
-                  ra.pau_id = pa.pau_id
+                  ra.pau_id::TEXT = pa.pau_id::TEXT
                   OR ra.pau_id::TEXT = p.codigo::TEXT
                   OR p_sub.codigo::TEXT = p.codigo::TEXT
                 )
-                AND ra.actividad_id = pa.actividad_id
+                AND ra.actividad_id::TEXT = pa.actividad_id::TEXT
               )
             )
           ), 0
@@ -52,11 +52,11 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.fecha_inicio,
         pa.fecha_fin
       FROM pau_actividades pa
-      JOIN paus p ON p.id = pa.pau_id
-      JOIN proyectos pr ON pr.id = p.proyecto_id
-      JOIN actividades_catalogo ac ON ac.id = pa.actividad_id
-      LEFT JOIN usuarios u1 ON u1.id = pa.tecnico_id
-      LEFT JOIN usuarios u2 ON u2.id = pa.tecnico_secundario_id
+      JOIN paus p ON p.id::TEXT = pa.pau_id::TEXT
+      JOIN proyectos pr ON pr.id::TEXT = p.proyecto_id::TEXT
+      JOIN actividades_catalogo ac ON ac.id::TEXT = pa.actividad_id::TEXT
+      LEFT JOIN usuarios u1 ON u1.id::TEXT = pa.tecnico_id::TEXT
+      LEFT JOIN usuarios u2 ON u2.id::TEXT = pa.tecnico_secundario_id::TEXT
       ORDER BY pa.id DESC;
     `;
 
@@ -69,7 +69,7 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id)
+ * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id de forma segura)
  */
 exports.asignarTrabajo = async (req, res) => {
   const {
@@ -108,16 +108,18 @@ exports.asignarTrabajo = async (req, res) => {
       RETURNING *;
     `;
 
-    // Normalización estricta de IDs a Integer o Null
-    const secIdParsed = (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '')
-      ? parseInt(tecnico_secundario_id, 10)
-      : null;
+    // Manejo ultra seguro para que el ID secundario nunca se descarte
+    let secId = null;
+    if (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '' && String(tecnico_secundario_id) !== 'null') {
+      secId = parseInt(tecnico_secundario_id, 10);
+      if (isNaN(secId)) secId = null;
+    }
 
     const values = [
       parseInt(pau_id, 10),
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
-      isNaN(secIdParsed) ? null : secIdParsed,
+      secId,
       parseFloat(cantidad),
       porcentaje_avance ? parseFloat(porcentaje_avance) : 100,
       valor_calculado ? parseFloat(valor_calculado) : 0,
@@ -170,13 +172,15 @@ exports.editarAsignacion = async (req, res) => {
       RETURNING *;
     `;
 
-    const secIdParsed = (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '')
-      ? parseInt(tecnico_secundario_id, 10)
-      : null;
+    let secId = null;
+    if (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '' && String(tecnico_secundario_id) !== 'null') {
+      secId = parseInt(tecnico_secundario_id, 10);
+      if (isNaN(secId)) secId = null;
+    }
 
     const values = [
       parseInt(tecnico_id, 10),
-      isNaN(secIdParsed) ? null : secIdParsed,
+      secId,
       parseInt(actividad_id, 10),
       parseInt(pau_id, 10),
       parseFloat(cantidad),

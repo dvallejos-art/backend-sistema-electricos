@@ -24,8 +24,8 @@ router.get('/actividades', supervisorController.obtenerActividades);
 // 7. Resumen de asignaciones
 router.get('/asignaciones', supervisorController.obtenerAsignaciones);
 
-// 8. Registrar asignación/avance a técnico
-router.post('/asignar', supervisorController.registrarAvance);
+// 8. Crear nueva asignación a técnico (CORREGIDO: llama a asignarTrabajo)
+router.post('/asignar', supervisorController.asignarTrabajo);
 
 // ✏️ 9. Editar asignación existente
 router.put('/asignaciones/:id', supervisorController.editarAsignacion);

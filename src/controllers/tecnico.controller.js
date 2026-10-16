@@ -19,6 +19,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         u1.nombre AS tecnico_lider_nombre,
         u2.nombre AS tecnico_secundario_nombre,
         ac.descripcion AS actividad,
+        ac.descripcion AS nombre,
         ac.unidad_medida,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
@@ -86,8 +87,11 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
 
     const result = await pool.query(query, [pau_id_param, tecnico_id]);
 
+    // MAPEO GARANTIZADO DE CAMPOS PARA REACT
     const mapeados = result.rows.map(row => ({
       ...row,
+      tecnico_id: row.tecnico_id ? String(row.tecnico_id) : null,
+      tecnico_secundario_id: row.tecnico_secundario_id ? String(row.tecnico_secundario_id) : null,
       disponibleReal: parseFloat(row.cantidad_disponible || 0)
     }));
 

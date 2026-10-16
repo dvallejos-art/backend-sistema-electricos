@@ -73,6 +73,11 @@ exports.actualizarUsuario = async (req, res, next) => {
          WHERE id = $5 RETURNING id, nombre, correo, rol`,
         [nombreClean, correoClean, rolClean, passwordHash, id]
       );
+
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: 'Usuario no encontrado.' });
+      }
+
       return res.json({ mensaje: 'Usuario actualizado con éxito', usuario: result.rows[0] });
     } else {
       const result = await pool.query(
@@ -220,7 +225,7 @@ exports.eliminarActividad = async (req, res, next) => {
 
 // Obtener precios configurados para una actividad
 exports.obtenerPreciosActividad = async (req, res) => {
-  const { id } = req.params; // actividad_id
+  const { id } = req.params;
 
   try {
     const query = `
@@ -247,7 +252,7 @@ exports.obtenerPreciosActividad = async (req, res) => {
 
 // Guardar o actualizar precio unitario de actividad por proyecto
 exports.guardarPrecioActividad = async (req, res) => {
-  const { id } = req.params; // actividad_id
+  const { id } = req.params;
   const { proyecto_id, edificio_id, precio_unitario } = req.body;
 
   const targetProyectoId = parseInt(proyecto_id || edificio_id, 10);
@@ -277,7 +282,6 @@ exports.guardarPrecioActividad = async (req, res) => {
       );
     }
 
-    // Retorna las tarifas actualizadas para renderizar al instante en pantalla
     const tarifasActualizadas = await pool.query(
       `SELECT 
         pa.id,
@@ -320,9 +324,7 @@ exports.eliminarPrecioActividad = async (req, res, next) => {
 // 4. PROYECTOS / EDIFICIOS
 // ==========================================
 
-// src/controllers/admin.controller.js
-
-// 4. PROYECTOS / EDIFICIOS - Obtener todos con Avance Monetario Real
+// Obtener todos con Avance Monetario Real
 exports.obtenerEdificios = async (req, res, next) => {
   try {
     const query = `
@@ -331,7 +333,7 @@ exports.obtenerEdificios = async (req, res, next) => {
         p.nombre,
         CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
 
-        -- 1. Cálculo de Total Ejecutado en Dinero ($) = Cantidad * Precio Unitario
+        -- 1. Total Ejecutado ($)
         COALESCE(
           (
             SELECT SUM(
@@ -346,25 +348,27 @@ exports.obtenerEdificios = async (req, res, next) => {
           ), 0
         ) AS total_ejecutado,
 
-        -- 2. Cálculo Porcentual ($ Ejecutado / Presupuesto Total) * 100
-        ROUND(
-          LEAST(
-            (
-              COALESCE(
-                (
-                  SELECT SUM(
-                    CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0)
-                  )
-                  FROM registros_avance ra
-                  JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
-                  LEFT JOIN precios_actividades pa_precio 
-                    ON CAST(pa_precio.actividad_id AS TEXT) = CAST(ra.actividad_id AS TEXT) 
-                   AND CAST(pa_precio.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
-                  WHERE pau.proyecto_id = p.id
-                ), 0
-              ) / NULLIF(CAST(p.presupuesto_total AS NUMERIC), 0)
-            ) * 100, 100
-          ), 2
+        -- 2. Porcentaje de Avance Real
+        COALESCE(
+          ROUND(
+            LEAST(
+              (
+                COALESCE(
+                  (
+                    SELECT SUM(
+                      CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0)
+                    )
+                    FROM registros_avance ra
+                    JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
+                    LEFT JOIN precios_actividades pa_precio 
+                      ON CAST(pa_precio.actividad_id AS TEXT) = CAST(ra.actividad_id AS TEXT) 
+                     AND CAST(pa_precio.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
+                    WHERE pau.proyecto_id = p.id
+                  ), 0
+                ) / NULLIF(CAST(p.presupuesto_total AS NUMERIC), 0)
+              ) * 100, 100
+            ), 2
+          ), 0
         ) AS porcentaje_avance
 
       FROM proyectos p

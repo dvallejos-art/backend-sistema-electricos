@@ -5,13 +5,11 @@ const pool = require('../config/db');
  * 1. Obtener actividades asignadas con Saldo Disponible Real y datos de cuadrilla
  */
 exports.obtenerActividadesPauTecnico = async (req, res) => {
-  // Desactivar caché para garantizar datos frescos
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
   const pau_id_param = req.params.pau_id;
-  // Obtener ID del técnico por params, user token, query o body
   const tecnico_id = req.params.id || (req.user ? req.user.id : (req.query.tecnico_id || null));
 
   try {
@@ -30,21 +28,21 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
 
-        -- Suma de avances ejecutados
+        -- Suma de avances
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
-            LEFT JOIN paus p_sub ON CAST(p_sub.id AS TEXT) = CAST(ra.pau_id AS TEXT)
+            LEFT JOIN paus p_sub ON p_sub.id = ra.pau_id
             WHERE (
               ra.pau_actividad_id = pa.id
               OR (
                 (
-                  CAST(ra.pau_id AS TEXT) = CAST(pa.pau_id AS TEXT)
-                  OR CAST(ra.pau_id AS TEXT) = CAST(p.codigo AS TEXT)
-                  OR CAST(p_sub.codigo AS TEXT) = CAST(p.codigo AS TEXT)
+                  ra.pau_id = pa.pau_id
+                  OR ra.pau_id::TEXT = p.codigo::TEXT
+                  OR p_sub.codigo::TEXT = p.codigo::TEXT
                 )
-                AND CAST(ra.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+                AND ra.actividad_id = pa.actividad_id
               )
             )
           ), 0
@@ -56,16 +54,16 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
             (
               SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
               FROM registros_avance ra
-              LEFT JOIN paus p_sub ON CAST(p_sub.id AS TEXT) = CAST(ra.pau_id AS TEXT)
+              LEFT JOIN paus p_sub ON p_sub.id = ra.pau_id
               WHERE (
                 ra.pau_actividad_id = pa.id
                 OR (
                   (
-                    CAST(ra.pau_id AS TEXT) = CAST(pa.pau_id AS TEXT)
-                    OR CAST(ra.pau_id AS TEXT) = CAST(p.codigo AS TEXT)
-                    OR CAST(p_sub.codigo AS TEXT) = CAST(p.codigo AS TEXT)
+                    ra.pau_id = pa.pau_id
+                    OR ra.pau_id::TEXT = p.codigo::TEXT
+                    OR p_sub.codigo::TEXT = p.codigo::TEXT
                   )
-                  AND CAST(ra.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+                  AND ra.actividad_id = pa.actividad_id
                 )
               )
             ), 0
@@ -73,27 +71,26 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         ) AS cantidad_disponible
 
       FROM pau_actividades pa
-      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
-      JOIN actividades_catalogo ac ON CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
-      LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
-      LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      JOIN paus p ON p.id = pa.pau_id
+      JOIN actividades_catalogo ac ON ac.id = pa.actividad_id
+      LEFT JOIN usuarios u1 ON u1.id = pa.tecnico_id
+      LEFT JOIN usuarios u2 ON u2.id = pa.tecnico_secundario_id
       WHERE (
-        CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
-        OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
-        OR CAST(p.nombre AS TEXT) = CAST($1 AS TEXT)
+        pa.pau_id::TEXT = $1::TEXT
+        OR p.codigo::TEXT = $1::TEXT
+        OR p.nombre::TEXT = $1::TEXT
       )
       AND (
         $2::TEXT IS NULL 
         OR $2::TEXT = '' 
-        OR CAST(pa.tecnico_id AS TEXT) = CAST($2 AS TEXT)
-        OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($2 AS TEXT)
+        OR pa.tecnico_id::TEXT = $2::TEXT
+        OR pa.tecnico_secundario_id::TEXT = $2::TEXT
       )
       ORDER BY ac.descripcion ASC;
     `;
 
     const result = await pool.query(query, [pau_id_param, tecnico_id]);
 
-    // MAPEO GARANTIZADO DE CAMPOS PARA REACT (Garantiza envío de IDs aun cuando se consulte sin param de usuario)
     const mapeados = result.rows.map(row => ({
       ...row,
       tecnico_id: row.tecnico_id ? String(row.tecnico_id) : null,
@@ -109,7 +106,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
 };
 
 /**
- * 2. Registrar Avance Diario con Bloqueo de Exceso
+ * 2. Registrar Avance Diario
  */
 exports.registrarAvanceDiario = async (req, res) => {
   const { pau_id, actividad_id, pau_actividad_id, cantidad, observaciones } = req.body;
@@ -137,28 +134,28 @@ exports.registrarAvanceDiario = async (req, res) => {
             (
               SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
               FROM registros_avance ra
-              LEFT JOIN paus p_sub ON CAST(p_sub.id AS TEXT) = CAST(ra.pau_id AS TEXT)
+              LEFT JOIN paus p_sub ON p_sub.id = ra.pau_id
               WHERE (
                 ra.pau_actividad_id = pa.id 
                 OR (
                   (
-                    CAST(ra.pau_id AS TEXT) = CAST(pa.pau_id AS TEXT)
-                    OR CAST(ra.pau_id AS TEXT) = CAST(p.codigo AS TEXT)
-                    OR CAST(p_sub.codigo AS TEXT) = CAST(p.codigo AS TEXT)
+                    ra.pau_id = pa.pau_id
+                    OR ra.pau_id::TEXT = p.codigo::TEXT
+                    OR p_sub.codigo::TEXT = p.codigo::TEXT
                   )
-                  AND CAST(ra.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+                  AND ra.actividad_id = pa.actividad_id
                 )
               )
             ), 0
           ), 2
         ) AS disponible
       FROM pau_actividades pa
-      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      JOIN paus p ON p.id = pa.pau_id
       WHERE (
-        ($1::TEXT IS NOT NULL AND $1::TEXT != '' AND CAST(pa.id AS TEXT) = CAST($1 AS TEXT))
+        ($1::TEXT IS NOT NULL AND $1::TEXT != '' AND pa.id::TEXT = $1::TEXT)
         OR (
-          (CAST(pa.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(p.codigo AS TEXT) = CAST($2 AS TEXT))
-          AND CAST(pa.actividad_id AS TEXT) = CAST($3 AS TEXT)
+          (pa.pau_id::TEXT = $2::TEXT OR p.codigo::TEXT = $2::TEXT)
+          AND pa.actividad_id::TEXT = $3::TEXT
         )
       )
       ORDER BY pa.id DESC
@@ -177,7 +174,7 @@ exports.registrarAvanceDiario = async (req, res) => {
 
     const asignacion = checkResult.rows[0];
 
-    // Bloqueo de seguridad en el backend: solo el técnico líder puede registrar avances
+    // Bloqueo estricto en Backend: Si es el acompañante, no puede registrar avance
     if (asignacion.tecnico_secundario_id && String(asignacion.tecnico_secundario_id) === String(tecnicoId)) {
       return res.status(403).json({ error: 'Acción denegada: Solo el Técnico Líder de la cuadrilla puede registrar avances.' });
     }
@@ -244,13 +241,13 @@ exports.obtenerMisAvances = async (req, res) => {
         ra.observaciones,
         CASE WHEN pa.tecnico_secundario_id IS NOT NULL THEN true ELSE false END AS es_cuadrilla
       FROM registros_avance ra
-      LEFT JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
+      LEFT JOIN paus pau ON (pau.id = ra.pau_id OR pau.codigo::TEXT = ra.pau_id::TEXT)
       LEFT JOIN proyectos p ON p.id = pau.proyecto_id
-      LEFT JOIN actividades_catalogo act ON CAST(act.id AS TEXT) = CAST(ra.actividad_id AS TEXT)
-      LEFT JOIN pau_actividades pa ON CAST(pa.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
-      LEFT JOIN actividades_catalogo pa_act ON CAST(pa_act.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
-      WHERE CAST(ra.empleado_id AS TEXT) = CAST($1 AS TEXT)
-         OR CAST(ra.tecnico_id AS TEXT) = CAST($1 AS TEXT)
+      LEFT JOIN actividades_catalogo act ON act.id = ra.actividad_id
+      LEFT JOIN pau_actividades pa ON pa.id = ra.pau_actividad_id
+      LEFT JOIN actividades_catalogo pa_act ON pa_act.id = pa.actividad_id
+      WHERE ra.empleado_id::TEXT = $1::TEXT
+         OR ra.tecnico_id::TEXT = $1::TEXT
       ORDER BY ra.fecha_registro DESC, ra.id DESC
       LIMIT 50;
     `;

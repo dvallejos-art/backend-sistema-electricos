@@ -27,21 +27,21 @@ exports.obtenerAsignaciones = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         
-        -- Cantidad ejecutada real registrada por el técnico
+        -- Cantidad ejecutada real registrada
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
-            LEFT JOIN paus p_sub ON CAST(p_sub.id AS TEXT) = CAST(ra.pau_id AS TEXT)
+            LEFT JOIN paus p_sub ON p_sub.id = ra.pau_id
             WHERE (
               ra.pau_actividad_id = pa.id
               OR (
                 (
-                  CAST(ra.pau_id AS TEXT) = CAST(pa.pau_id AS TEXT)
-                  OR CAST(ra.pau_id AS TEXT) = CAST(p.codigo AS TEXT)
-                  OR CAST(p_sub.codigo AS TEXT) = CAST(p.codigo AS TEXT)
+                  ra.pau_id = pa.pau_id
+                  OR ra.pau_id::TEXT = p.codigo::TEXT
+                  OR p_sub.codigo::TEXT = p.codigo::TEXT
                 )
-                AND CAST(ra.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+                AND ra.actividad_id = pa.actividad_id
               )
             )
           ), 0
@@ -52,11 +52,11 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.fecha_inicio,
         pa.fecha_fin
       FROM pau_actividades pa
-      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      JOIN paus p ON p.id = pa.pau_id
       JOIN proyectos pr ON pr.id = p.proyecto_id
-      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
-      LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
-      LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      JOIN actividades_catalogo ac ON ac.id = pa.actividad_id
+      LEFT JOIN usuarios u1 ON u1.id = pa.tecnico_id
+      LEFT JOIN usuarios u2 ON u2.id = pa.tecnico_secundario_id
       ORDER BY pa.id DESC;
     `;
 
@@ -69,7 +69,7 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id con casteo seguro)
+ * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id)
  */
 exports.asignarTrabajo = async (req, res) => {
   const {
@@ -104,26 +104,20 @@ exports.asignarTrabajo = async (req, res) => {
         fecha_inicio,
         fecha_fin
       )
-      VALUES (
-        $1, 
-        $2, 
-        $3, 
-        $4, 
-        $5, 
-        $6, 
-        $7, 
-        $8, 
-        $9, 
-        $10
-      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *;
     `;
+
+    // Normalización estricta de IDs a Integer o Null
+    const secIdParsed = (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '')
+      ? parseInt(tecnico_secundario_id, 10)
+      : null;
 
     const values = [
       parseInt(pau_id, 10),
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
-      tecnico_secundario_id && String(tecnico_secundario_id).trim() !== '' ? parseInt(tecnico_secundario_id, 10) : null,
+      isNaN(secIdParsed) ? null : secIdParsed,
       parseFloat(cantidad),
       porcentaje_avance ? parseFloat(porcentaje_avance) : 100,
       valor_calculado ? parseFloat(valor_calculado) : 0,
@@ -176,9 +170,13 @@ exports.editarAsignacion = async (req, res) => {
       RETURNING *;
     `;
 
+    const secIdParsed = (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '')
+      ? parseInt(tecnico_secundario_id, 10)
+      : null;
+
     const values = [
       parseInt(tecnico_id, 10),
-      tecnico_secundario_id && String(tecnico_secundario_id).trim() !== '' ? parseInt(tecnico_secundario_id, 10) : null,
+      isNaN(secIdParsed) ? null : secIdParsed,
       parseInt(actividad_id, 10),
       parseInt(pau_id, 10),
       parseFloat(cantidad),

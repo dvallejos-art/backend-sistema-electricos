@@ -2,7 +2,7 @@
 const pool = require('../config/db');
 
 /**
- * 1. Obtener todas las asignaciones para la tabla del supervisor (Incluye Cuadrilla visible)
+ * 1. Obtener asignaciones para el panel del supervisor
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -69,7 +69,7 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id de forma segura)
+ * 2. Crear nueva asignación (Procesa y persiste tecnico_secundario_id)
  */
 exports.asignarTrabajo = async (req, res) => {
   const {
@@ -108,9 +108,14 @@ exports.asignarTrabajo = async (req, res) => {
       RETURNING *;
     `;
 
-    // Manejo ultra seguro para que el ID secundario nunca se descarte
+    // Normalización estricta del valor secundario a número entero o NULL
     let secId = null;
-    if (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '' && String(tecnico_secundario_id) !== 'null') {
+    if (
+      tecnico_secundario_id !== null && 
+      tecnico_secundario_id !== undefined && 
+      String(tecnico_secundario_id).trim() !== '' && 
+      String(tecnico_secundario_id) !== 'null'
+    ) {
       secId = parseInt(tecnico_secundario_id, 10);
       if (isNaN(secId)) secId = null;
     }
@@ -173,7 +178,12 @@ exports.editarAsignacion = async (req, res) => {
     `;
 
     let secId = null;
-    if (tecnico_secundario_id !== null && tecnico_secundario_id !== undefined && String(tecnico_secundario_id).trim() !== '' && String(tecnico_secundario_id) !== 'null') {
+    if (
+      tecnico_secundario_id !== null && 
+      tecnico_secundario_id !== undefined && 
+      String(tecnico_secundario_id).trim() !== '' && 
+      String(tecnico_secundario_id) !== 'null'
+    ) {
       secId = parseInt(tecnico_secundario_id, 10);
       if (isNaN(secId)) secId = null;
     }

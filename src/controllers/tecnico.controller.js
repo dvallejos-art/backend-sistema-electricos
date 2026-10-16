@@ -5,8 +5,14 @@ const pool = require('../config/db');
  * 1. Obtener actividades asignadas con Saldo Disponible Real y datos de cuadrilla
  */
 exports.obtenerActividadesPauTecnico = async (req, res) => {
+  // Desactivar caché para garantizar datos frescos
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const pau_id_param = req.params.pau_id;
-  const tecnico_id = req.user ? req.user.id : (req.query.tecnico_id || null);
+  // Obtener ID del técnico por params, user token, query o body
+  const tecnico_id = req.params.id || (req.user ? req.user.id : (req.query.tecnico_id || null));
 
   try {
     const query = `
@@ -24,7 +30,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
 
-        -- Suma de avances
+        -- Suma de avances ejecutados
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -87,7 +93,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
 
     const result = await pool.query(query, [pau_id_param, tecnico_id]);
 
-    // MAPEO GARANTIZADO DE CAMPOS PARA REACT
+    // MAPEO GARANTIZADO DE CAMPOS PARA REACT (Garantiza envío de IDs aun cuando se consulte sin param de usuario)
     const mapeados = result.rows.map(row => ({
       ...row,
       tecnico_id: row.tecnico_id ? String(row.tecnico_id) : null,

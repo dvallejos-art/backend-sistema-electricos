@@ -69,7 +69,7 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id)
+ * 2. Crear nueva asignación (Guarda tecnico_id y tecnico_secundario_id con casteo seguro)
  */
 exports.asignarTrabajo = async (req, res) => {
   const {
@@ -104,7 +104,18 @@ exports.asignarTrabajo = async (req, res) => {
         fecha_inicio,
         fecha_fin
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES (
+        $1, 
+        $2, 
+        $3, 
+        $4, 
+        $5, 
+        $6, 
+        $7, 
+        $8, 
+        $9, 
+        $10
+      )
       RETURNING *;
     `;
 
@@ -112,7 +123,7 @@ exports.asignarTrabajo = async (req, res) => {
       parseInt(pau_id, 10),
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
-      tecnico_secundario_id ? parseInt(tecnico_secundario_id, 10) : null,
+      tecnico_secundario_id && String(tecnico_secundario_id).trim() !== '' ? parseInt(tecnico_secundario_id, 10) : null,
       parseFloat(cantidad),
       porcentaje_avance ? parseFloat(porcentaje_avance) : 100,
       valor_calculado ? parseFloat(valor_calculado) : 0,
@@ -167,7 +178,7 @@ exports.editarAsignacion = async (req, res) => {
 
     const values = [
       parseInt(tecnico_id, 10),
-      tecnico_secundario_id ? parseInt(tecnico_secundario_id, 10) : null,
+      tecnico_secundario_id && String(tecnico_secundario_id).trim() !== '' ? parseInt(tecnico_secundario_id, 10) : null,
       parseInt(actividad_id, 10),
       parseInt(pau_id, 10),
       parseFloat(cantidad),

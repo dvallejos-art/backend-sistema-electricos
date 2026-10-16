@@ -1,217 +1,74 @@
 // src/controllers/supervisor.controller.js
-const pool = require('../config/db');
 
-exports.obtenerAsignaciones = async (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-
+/**
+ * Obtener PAUs de un proyecto por ID
+ */
+exports.obtenerPausPorProyecto = async (req, res) => {
+  const { idProyecto } = req.params;
   try {
     const query = `
-      SELECT 
-        pa.id,
-        pa.pau_id,
-        pa.actividad_id,
-        p.proyecto_id,
-        pa.tecnico_id,
-        pa.tecnico_secundario_id,
-        u1.nombre AS tecnico,
-        COALESCE(
-          u2.nombre, 
-          (SELECT nombre FROM usuarios WHERE id::TEXT = pa.tecnico_secundario_id::TEXT LIMIT 1)
-        ) AS tecnico_secundario_nombre,
-        pr.nombre AS proyecto,
-        COALESCE(p.nombre, p.codigo) AS departamento,
-        COALESCE(p.nombre, p.codigo) AS pau,
-        ac.descripcion AS actividad,
-        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
-        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
-        
-        COALESCE(
-          (
-            SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
-            FROM registros_avance ra
-            LEFT JOIN paus p_sub ON p_sub.id::TEXT = ra.pau_id::TEXT
-            WHERE (
-              ra.pau_actividad_id = pa.id
-              OR (
-                (
-                  ra.pau_id::TEXT = pa.pau_id::TEXT
-                  OR ra.pau_id::TEXT = p.codigo::TEXT
-                  OR p_sub.codigo::TEXT = p.codigo::TEXT
-                )
-                AND ra.actividad_id::TEXT = pa.actividad_id::TEXT
-              )
-            )
-          ), 0
-        ) AS cantidad_ejecutada,
-
-        pa.porcentaje_avance,
-        pa.observaciones,
-        pa.fecha_inicio,
-        pa.fecha_fin
-      FROM pau_actividades pa
-      JOIN paus p ON p.id::TEXT = pa.pau_id::TEXT
-      JOIN proyectos pr ON pr.id::TEXT = p.proyecto_id::TEXT
-      JOIN actividades_catalogo ac ON ac.id::TEXT = pa.actividad_id::TEXT
-      LEFT JOIN usuarios u1 ON u1.id::TEXT = pa.tecnico_id::TEXT
-      LEFT JOIN usuarios u2 ON u2.id::TEXT = pa.tecnico_secundario_id::TEXT
-      ORDER BY pa.id DESC;
+      SELECT id, proyecto_id, codigo, nombre 
+      FROM paus 
+      WHERE CAST(proyecto_id AS TEXT) = CAST($1 AS TEXT)
+      ORDER BY codigo ASC;
     `;
-
-    const result = await pool.query(query);
+    const result = await pool.query(query, [idProyecto]);
     res.json(result.rows);
   } catch (err) {
-    console.error('Error al obtener asignaciones:', err);
+    console.error('Error al obtener PAUs por proyecto:', err);
     res.status(500).json({ error: err.message });
   }
 };
 
-exports.asignarTrabajo = async (req, res) => {
-  const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
-  const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
+/**
+ * Obtener lista de proyectos
+ */
+exports.obtenerProyectos = async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, nombre FROM proyectos ORDER BY nombre ASC;');
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener proyectos:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
 
-  const {
-    proyecto_id,
-    actividad_id,
-    pau_id,
-    cantidad,
-    porcentaje_avance,
-    valor_calculado,
-    observaciones,
-    fecha_inicio,
-    fecha_fin
-  } = req.body;
+/**
+ * Crear o devolver PAU existente cuando se escribe manualmente
+ */
+exports.crearODevolverPau = async (req, res) => {
+  const { proyecto_id, codigo, nombre } = req.body;
 
-  if (!tecnico_id || !actividad_id || !pau_id || !cantidad) {
-    return res.status(400).json({ error: 'Faltan datos obligatorios para la asignación.' });
+  if (!proyecto_id || !codigo) {
+    return res.status(400).json({ error: 'El proyecto y el código de PAU son obligatorios.' });
   }
 
   try {
-    let secId = null;
-    if (
-      rawSecundario !== null && 
-      rawSecundario !== undefined && 
-      String(rawSecundario).trim() !== '' && 
-      String(rawSecundario) !== 'null'
-    ) {
-      secId = parseInt(rawSecundario, 10);
-      if (isNaN(secId)) secId = null;
+    // 1. Verificar si ya existe el PAU en ese proyecto
+    const existe = await pool.query(
+      `SELECT id, proyecto_id, codigo, nombre 
+       FROM paus 
+       WHERE CAST(proyecto_id AS TEXT) = CAST($1 AS TEXT) 
+         AND LOWER(codigo) = LOWER($2) 
+       LIMIT 1;`,
+      [proyecto_id, codigo.trim()]
+    );
+
+    if (existe.rows.length > 0) {
+      return res.json({ pau: existe.rows[0], id: existe.rows[0].id });
     }
 
-    const query = `
-      INSERT INTO pau_actividades (
-        pau_id,
-        actividad_id,
-        tecnico_id,
-        tecnico_secundario_id,
-        cantidad_presupuestada,
-        porcentaje_avance,
-        valor_calculado,
-        observaciones,
-        fecha_inicio,
-        fecha_fin
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING *;
-    `;
+    // 2. Si no existe, crearlo
+    const nuevo = await pool.query(
+      `INSERT INTO paus (proyecto_id, codigo, nombre) 
+       VALUES ($1, $2, $3) 
+       RETURNING id, proyecto_id, codigo, nombre;`,
+      [parseInt(proyecto_id, 10), codigo.trim(), (nombre || codigo).trim()]
+    );
 
-    const values = [
-      parseInt(pau_id, 10),
-      parseInt(actividad_id, 10),
-      parseInt(tecnico_id, 10),
-      secId,
-      parseFloat(cantidad),
-      porcentaje_avance ? parseFloat(porcentaje_avance) : 100,
-      valor_calculado ? parseFloat(valor_calculado) : 0,
-      observaciones || '',
-      fecha_inicio || null,
-      fecha_fin || null
-    ];
-
-    const result = await pool.query(query, values);
-    res.json({ mensaje: 'Nueva asignación guardada con éxito.', asignacion: result.rows[0] });
+    res.status(201).json({ pau: nuevo.rows[0], id: nuevo.rows[0].id });
   } catch (err) {
-    console.error('Error al asignar trabajo:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.registrarAvance = exports.asignarTrabajo;
-
-exports.editarAsignacion = async (req, res) => {
-  const { id } = req.params;
-  const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
-  const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
-
-  const {
-    actividad_id,
-    pau_id,
-    cantidad,
-    porcentaje_avance,
-    valor_calculado,
-    observaciones,
-    fecha_inicio,
-    fecha_fin
-  } = req.body;
-
-  try {
-    let secId = null;
-    if (
-      rawSecundario !== null && 
-      rawSecundario !== undefined && 
-      String(rawSecundario).trim() !== '' && 
-      String(rawSecundario) !== 'null'
-    ) {
-      secId = parseInt(rawSecundario, 10);
-      if (isNaN(secId)) secId = null;
-    }
-
-    const query = `
-      UPDATE pau_actividades
-      SET 
-        tecnico_id = $1,
-        tecnico_secundario_id = $2,
-        actividad_id = $3,
-        pau_id = $4,
-        cantidad_presupuestada = $5,
-        porcentaje_avance = $6,
-        valor_calculado = $7,
-        observaciones = $8,
-        fecha_inicio = $9,
-        fecha_fin = $10
-      WHERE id = $11
-      RETURNING *;
-    `;
-
-    const values = [
-      parseInt(tecnico_id, 10),
-      secId,
-      parseInt(actividad_id, 10),
-      parseInt(pau_id, 10),
-      parseFloat(cantidad),
-      porcentaje_avance ? parseFloat(porcentaje_avance) : 100,
-      valor_calculado ? parseFloat(valor_calculado) : 0,
-      observaciones || '',
-      fecha_inicio || null,
-      fecha_fin || null,
-      parseInt(id, 10)
-    ];
-
-    const result = await pool.query(query, values);
-    res.json({ mensaje: 'Asignación actualizada correctamente.', asignacion: result.rows[0] });
-  } catch (err) {
-    console.error('Error al actualizar asignación:', err);
-    res.status(500).json({ error: err.message });
-  }
-};
-
-exports.eliminarAsignacion = async (req, res) => {
-  const { id } = req.params;
-  try {
-    await pool.query('DELETE FROM pau_actividades WHERE id = $1;', [id]);
-    res.json({ mensaje: 'Asignación eliminada correctamente.' });
-  } catch (err) {
-    console.error('Error al eliminar asignación:', err);
+    console.error('Error al crear o devolver PAU:', err);
     res.status(500).json({ error: err.message });
   }
 };

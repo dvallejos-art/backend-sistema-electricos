@@ -1,3 +1,4 @@
+// src/controllers/reportes.controller.js
 const pool = require('../config/db');
 
 // Obtener resumen de avance de un PAU
@@ -6,16 +7,37 @@ exports.getResumenAvancePAU = async (req, res, next) => {
   try {
     const query = `
       SELECT 
-        a.descripcion AS actividad,
-        a.unidad_medida,
-        pa.cantidad_presupuestada,
-        COALESCE(SUM(ra.cantidad), 0) AS cantidad_ejecutada,
-        (pa.cantidad_presupuestada - COALESCE(SUM(ra.cantidad), 0)) AS saldo_pendiente
+        pa.id AS pau_actividad_id,
+        ac.descripcion AS actividad,
+        ac.unidad_medida,
+        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
+        
+        -- Suma vinculada estrictamente por pau_actividad_id
+        COALESCE(
+          (
+            SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+            FROM registros_avance ra
+            WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          ), 0
+        ) AS cantidad_ejecutada,
+
+        -- Saldo pendiente real
+        GREATEST(
+          CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(
+            (
+              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              FROM registros_avance ra
+              WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+            ), 0
+          ), 0
+        ) AS saldo_pendiente
+
       FROM pau_actividades pa
-      INNER JOIN actividades a ON a.id = pa.actividad_id
-      LEFT JOIN registros_avance ra ON ra.pau_id = pa.pau_id AND ra.actividad_id = pa.actividad_id
-      WHERE pa.pau_id = $1
-      GROUP BY a.descripcion, a.unidad_medida, pa.cantidad_presupuestada;
+      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
+         OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
+      ORDER BY ac.descripcion ASC;
     `;
     const result = await pool.query(query, [pau_id]);
     res.json(result.rows);
@@ -31,16 +53,17 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
     const query = `
       SELECT 
         ra.id,
-        ra.fecha,
-        pau.nombre AS departamento,
-        act.descripcion AS actividad,
-        ra.cantidad,
+        TO_CHAR(COALESCE(ra.fecha_registro, NOW()), 'YYYY-MM-DD') AS fecha,
+        COALESCE(pau.nombre, pau.codigo) AS departamento,
+        COALESCE(act.descripcion, 'Actividad') AS actividad,
+        CAST(ra.cantidad_ejecutada AS NUMERIC) AS cantidad,
         ra.observaciones
       FROM registros_avance ra
-      INNER JOIN paus pau ON pau.id = ra.pau_id
-      INNER JOIN actividades act ON act.id = ra.actividad_id
-      WHERE ra.empleado_id = $1
-      ORDER BY ra.fecha DESC;
+      LEFT JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
+      LEFT JOIN actividades_catalogo act ON CAST(act.id AS TEXT) = CAST(ra.actividad_id AS TEXT)
+      WHERE CAST(ra.tecnico_id AS TEXT) = CAST($1 AS TEXT)
+         OR CAST(ra.empleado_id AS TEXT) = CAST($1 AS TEXT)
+      ORDER BY ra.id DESC;
     `;
     const result = await pool.query(query, [empleado_id]);
     res.json(result.rows);

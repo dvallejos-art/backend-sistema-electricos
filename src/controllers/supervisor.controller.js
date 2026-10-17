@@ -130,7 +130,7 @@ exports.obtenerActividadesPorEdificio = async (req, res) => {
 };
 
 /**
- * 7. Obtener todas las asignaciones (Limpio y adaptado a las columnas reales de pau_actividades)
+ * 7. Obtener todas las asignaciones con cálculo de Avance Real acumulado
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -153,16 +153,25 @@ exports.obtenerAsignaciones = async (req, res) => {
         COALESCE(ac.descripcion, 'Sin Actividad') AS actividad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
-        0 AS cantidad_ejecutada,
+        
+        -- Cálculo dinámico de avances registrados para esta asignación
+        COALESCE(
+          (
+            SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+            FROM registros_avance ra
+            WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          ), 0
+        ) AS cantidad_ejecutada,
+
         pa.observaciones,
         pa.fecha_inicio,
         pa.fecha_fin
       FROM pau_actividades pa
-      LEFT JOIN paus p ON p.id = pa.pau_id
-      LEFT JOIN proyectos pr ON pr.id = p.proyecto_id
-      LEFT JOIN actividades_catalogo ac ON ac.id = pa.actividad_id
-      LEFT JOIN usuarios u1 ON u1.id = pa.tecnico_id
-      LEFT JOIN usuarios u2 ON u2.id = pa.tecnico_secundario_id
+      LEFT JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      LEFT JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+      LEFT JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
+      LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       ORDER BY pa.id DESC;
     `;
 

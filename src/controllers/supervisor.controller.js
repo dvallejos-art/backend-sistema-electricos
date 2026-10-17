@@ -184,7 +184,7 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 8. Crear nueva asignación (Sin incluir columnas inexistentes)
+ * 8. Crear nueva asignación (Conserva la cantidad física real ingresada)
  */
 exports.asignarTrabajo = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
@@ -194,6 +194,8 @@ exports.asignarTrabajo = async (req, res) => {
     actividad_id,
     pau_id,
     cantidad,
+    porcentaje_pago,
+    porcentaje,
     observaciones,
     fecha_inicio,
     fecha_fin
@@ -213,6 +215,12 @@ exports.asignarTrabajo = async (req, res) => {
     ) {
       secId = parseInt(rawSecundario, 10);
       if (isNaN(secId)) secId = null;
+    }
+
+    const pctReal = parseFloat(porcentaje_pago || porcentaje || 100);
+    let obsFinales = observaciones || '';
+    if (pctReal < 100 && !obsFinales.includes('[Etapa:')) {
+      obsFinales = `[Etapa: ${pctReal}%] ${obsFinales}`.trim();
     }
 
     const query = `
@@ -235,8 +243,8 @@ exports.asignarTrabajo = async (req, res) => {
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
       secId,
-      parseFloat(cantidad),
-      observaciones || '',
+      parseFloat(cantidad), // Guarda la cantidad física íntegra (ej. 2.00 o 6.00)
+      obsFinales,
       fecha_inicio || null,
       fecha_fin || null
     ];
@@ -263,6 +271,8 @@ exports.editarAsignacion = async (req, res) => {
     actividad_id,
     pau_id,
     cantidad,
+    porcentaje_pago,
+    porcentaje,
     observaciones,
     fecha_inicio,
     fecha_fin
@@ -278,6 +288,12 @@ exports.editarAsignacion = async (req, res) => {
     ) {
       secId = parseInt(rawSecundario, 10);
       if (isNaN(secId)) secId = null;
+    }
+
+    const pctReal = parseFloat(porcentaje_pago || porcentaje || 100);
+    let obsFinales = observaciones || '';
+    if (pctReal < 100 && !obsFinales.includes('[Etapa:')) {
+      obsFinales = `[Etapa: ${pctReal}%] ${obsFinales}`.trim();
     }
 
     const query = `
@@ -301,7 +317,7 @@ exports.editarAsignacion = async (req, res) => {
       parseInt(actividad_id, 10),
       parseInt(pau_id, 10),
       parseFloat(cantidad),
-      observaciones || '',
+      obsFinales,
       fecha_inicio || null,
       fecha_fin || null,
       parseInt(id, 10)

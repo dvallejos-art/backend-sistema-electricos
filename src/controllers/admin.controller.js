@@ -182,8 +182,9 @@ exports.obtenerPreciosActividad = async (req, res) => {
               COALESCE(p.nombre, 'Sin Edificio') AS edificio,
               COALESCE(p.nombre, 'Sin Edificio') AS edificio_nombre
        FROM precios_actividades pa
-       LEFT JOIN proyectos p ON pa.proyecto_id = p.id
-       WHERE pa.actividad_id = $1 ORDER BY pa.id DESC`,
+       LEFT JOIN proyectos p ON CAST(pa.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
+       WHERE CAST(pa.actividad_id AS TEXT) = CAST($1 AS TEXT) 
+       ORDER BY pa.id DESC`,
       [id]
     );
     res.json(result.rows);
@@ -204,7 +205,7 @@ exports.guardarPrecioActividad = async (req, res) => {
 
   try {
     const existe = await pool.query(
-      'SELECT id FROM precios_actividades WHERE actividad_id = $1 AND proyecto_id = $2',
+      'SELECT id FROM precios_actividades WHERE CAST(actividad_id AS TEXT) = CAST($1 AS TEXT) AND CAST(proyecto_id AS TEXT) = CAST($2 AS TEXT)',
       [id, targetProyectoId]
     );
 
@@ -218,8 +219,9 @@ exports.guardarPrecioActividad = async (req, res) => {
       `SELECT pa.id, pa.actividad_id, pa.proyecto_id, pa.precio_unitario,
               COALESCE(p.nombre, 'Sin Edificio') AS edificio
        FROM precios_actividades pa
-       LEFT JOIN proyectos p ON pa.proyecto_id = p.id
-       WHERE pa.actividad_id = $1 ORDER BY pa.id DESC`,
+       LEFT JOIN proyectos p ON CAST(p.id AS TEXT) = CAST(pa.proyecto_id AS TEXT)
+       WHERE CAST(pa.actividad_id AS TEXT) = CAST($1 AS TEXT) 
+       ORDER BY pa.id DESC`,
       [id]
     );
     res.json(result.rows);
@@ -238,31 +240,89 @@ exports.eliminarPrecioActividad = async (req, res, next) => {
   }
 };
 
-// 4. PROYECTOS / EDIFICIOS
+// 4. PROYECTOS / EDIFICIOS Y AVANCE TOTAL (CORREGIDO)
 exports.obtenerEdificios = async (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+
   try {
     const query = `
       SELECT 
         p.id,
         p.nombre,
         CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
+        
+        -- Suma acumulada de avances ejecutados en valor monetario
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0))
             FROM registros_avance ra
-            JOIN paus pau ON (CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT))
+            JOIN pau_actividades pa_act ON CAST(pa_act.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
+            JOIN paus pau ON CAST(pau.id AS TEXT) = CAST(pa_act.pau_id AS TEXT)
             LEFT JOIN precios_actividades pa_precio 
-              ON CAST(pa_precio.actividad_id AS TEXT) = CAST(ra.actividad_id AS TEXT) 
+              ON CAST(pa_precio.actividad_id AS TEXT) = CAST(pa_act.actividad_id AS TEXT) 
              AND CAST(pa_precio.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
-            WHERE pau.proyecto_id = p.id
+            WHERE CAST(pau.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
           ), 0
-        ) AS total_ejecutado
+        ) AS total_ejecutado,
+
+        -- Cálculo automático del Porcentaje de Avance Global del Edificio
+        CASE 
+          WHEN CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) > 0 THEN
+            ROUND(
+              (
+                COALESCE(
+                  (
+                    SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0))
+                    FROM registros_avance ra
+                    JOIN pau_actividades pa_act ON CAST(pa_act.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
+                    JOIN paus pau ON CAST(pau.id AS TEXT) = CAST(pa_act.pau_id AS TEXT)
+                    LEFT JOIN precios_actividades pa_precio 
+                      ON CAST(pa_precio.actividad_id AS TEXT) = CAST(pa_act.actividad_id AS TEXT) 
+                     AND CAST(pa_precio.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
+                    WHERE CAST(pau.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
+                  ), 0
+                ) / CAST(p.presupuesto_total AS NUMERIC)
+              ) * 100, 2
+            )
+          ELSE 0.00
+        END AS porcentaje_avance_global
+
       FROM proyectos p
-      ORDER BY p.id ASC;
+      ORDER BY p.nombre ASC;
     `;
     const result = await pool.query(query);
     res.json(result.rows);
   } catch (error) {
+    console.error('Error al obtener edificios:', error);
+    next(error);
+  }
+};
+
+exports.crearEdificio = async (req, res, next) => {
+  const { nombre, presupuesto_total } = req.body;
+  if (!nombre) return res.status(400).json({ error: 'El nombre del edificio es obligatorio.' });
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO proyectos (nombre, presupuesto_total) 
+       VALUES ($1, $2) 
+       RETURNING id, nombre, CAST(COALESCE(presupuesto_total, 0) AS NUMERIC) AS presupuesto_total`,
+      [nombre.trim(), parseFloat(presupuesto_total) || 0]
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error al crear edificio:', error);
+    next(error);
+  }
+};
+
+exports.eliminarEdificio = async (req, res, next) => {
+  const { id } = req.params;
+  try {
+    await pool.query('DELETE FROM proyectos WHERE id = $1', [id]);
+    res.json({ mensaje: 'Edificio eliminado con éxito.' });
+  } catch (error) {
+    console.error('Error al eliminar edificio:', error);
     next(error);
   }
 };

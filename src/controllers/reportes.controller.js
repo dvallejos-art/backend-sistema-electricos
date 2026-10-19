@@ -143,23 +143,41 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
   }
 };
 
-// 2. EXPORTAR A EXCEL (.CSV)
+// 2. EXPORTAR A EXCEL (.CSV) - FORMATO SEPARADO POR COLUMNAS AUTOMÁTICO
 exports.exportarExcel = async (req, res) => {
   try {
     req.query.limite = 10000;
     const mockRes = {
       setHeader: () => {},
       json: (data) => {
-        let csv = 'ID;Edificio;Departamento/PAU;Actividad;Tecnico Lider;Tecnico Acompanante;Presupuestado;Ejecutado;Saldo;Estado;Fecha\n';
+        // Indicador explícito para que Excel reconozca las columnas directamente
+        let csv = "sep=;\n"; 
+        csv += "ID;Edificio;Departamento/PAU;Actividad;Tecnico Lider;Tecnico Acompanante;Presupuestado;Ejecutado;Saldo;Estado;Fecha\n";
+
         data.forEach((row) => {
-          csv += `${row.asignacion_id};"${row.edificio}";"${row.departamento_pau}";"${row.actividad}";"${row.tecnico_principal}";"${row.tecnico_acompanante}";${row.cantidad_presupuestada};${row.cantidad_ejecutada};${row.saldo_disponible};"${row.estado_calculado}";${row.fecha_asignacion}\n`;
+          // Limpieza de saltos de línea internos en los textos
+          const actividadLimpia = String(row.actividad || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
+          const edificioLimpio = String(row.edificio || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
+          const dptoLimpio = String(row.departamento_pau || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
+          const tecLider = String(row.tecnico_principal || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
+          const tecAcomp = String(row.tecnico_acompanante || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
+          const estado = String(row.estado_calculado || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
+
+          const cantPres = parseFloat(row.cantidad_presupuestada || 0).toFixed(2);
+          const cantEjec = parseFloat(row.cantidad_ejecutada || 0).toFixed(2);
+          const saldo = parseFloat(row.saldo_disponible || 0).toFixed(2);
+
+          csv += `${row.asignacion_id};"${edificioLimpio}";"${dptoLimpio}";"${actividadLimpia}";"${tecLider}";"${tecAcomp}";${cantPres};${cantEjec};${saldo};"${estado}";"${row.fecha_asignacion}"\n`;
         });
+
+        // Respuesta con BOM UTF-8 (\uFEFF) para apertura nativa e inmediata en Excel
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', 'attachment; filename=Reporte_Actividades.csv');
-        return res.send(csv);
+        return res.status(200).send('\uFEFF' + csv);
       },
       status: () => ({ json: (err) => res.status(500).json(err) })
     };
+
     await exports.obtenerReporteAsignaciones(req, mockRes);
   } catch (err) {
     console.error('Error al exportar CSV:', err);
@@ -233,7 +251,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (CORRECCIÓN DEFINITIVA DE CONSOLIDACIÓN Y EJECUCIÓN TOPADA)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -244,7 +262,6 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           pa.actividad_id,
           p.proyecto_id,
           
-          -- Suma acumulada de los porcentajes asignados en observaciones (ej: 60 + 40 = 100)
           SUM(
             CASE 
               WHEN pa.observaciones ~ '[0-9]+%' THEN 
@@ -253,7 +270,6 @@ exports.getDetalleRubrosPAU = async (req, res) => {
             END
           ) AS pct_acumulado,
 
-          -- Si hay múltiples asignaciones del mismo rubro o contienen porcentaje %, fija la cantidad física real en MAX (2.00)
           CASE 
             WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ~ '[0-9]+%' THEN 1 ELSE 0 END) > 0 THEN
               MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
@@ -261,7 +277,6 @@ exports.getDetalleRubrosPAU = async (req, res) => {
               SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
           END AS cant_asignada_fisica,
 
-          -- Ponderación de avances ejecutados en registros_avance
           COALESCE(
             (
               SELECT SUM(
@@ -295,7 +310,6 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         ag.pct_acumulado,
         ag.cant_asignada_fisica,
         
-        -- CAPPING STRICTO: La cantidad ejecutada jamás supera la cantidad física asignada base (Topa en 2.00)
         LEAST(ag.cantidad_ejecutada_ponderada, ag.cant_asignada_fisica) AS cantidad_ejecutada,
         ROUND(LEAST(ag.cantidad_ejecutada_ponderada, ag.cant_asignada_fisica) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
 
@@ -323,7 +337,6 @@ exports.getDetalleRubrosPAU = async (req, res) => {
 
       const estaCompletado = subtotalPendiente === 0 || pendienteFisica === 0;
 
-      // Desaparece la etiqueta de Etapa si el acumulado alcanzó el 100% o la labor está completada
       let descripcionFinal = row.descripcion_rubro;
       if (pctAcum < 100 && !estaCompletado) {
         descripcionFinal += ` [${pctAcum.toFixed(0)}% Etapa]`;

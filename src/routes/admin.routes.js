@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - MANTIENE NUEVAS ASIGNACIONES SEPARADAS Y CONSOLIDA SOLO LO CERRADO
+// GET /proyectos/:id/detalle-paus - MANTIENE LAS NUEVAS ETAPAS VISIBLES HASTA COMPLETAR EL 100% DE LA UNIDAD
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -182,8 +182,8 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               actividad_id: actId,
               descripcion_base: a.descripcion_base,
               precio_unitario: parseFloat(a.precio_unitario || 0),
-              completadasTotalmente: [],
-              enProcesoOPendientes: []
+              historicasFinalizadas: [],
+              nuevasEtapasIndependientes: []
             };
           }
 
@@ -191,26 +191,24 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
           const pctEtapa = parseFloat(a.pct_etapa || 100);
 
-          // Límite físico en unidades ejecutables para la etapa
+          // Tope físico asignado a esta etapa (ejemplo: 1.00 * 60% = 0.60 física)
           const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
           const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
-          const pendienteFisicoEtapa = Math.max(0, limiteFisicoEtapa - cantEjecFisica);
 
           const itemData = {
             asignacion_id: a.asignacion_id,
             cantAsig,
             cantEjecFisica,
-            pendienteFisicoEtapa,
             limiteFisicoEtapa,
             pctEtapa
           };
 
-          // ÚNICAMENTE si la asignación no tiene saldo pendiente físico en su etapa se considera completada
-          if (pendienteFisicoEtapa <= 0.001) {
-            gruposPorActividad[actId].completadasTotalmente.push(itemData);
+          // ÚNICAMENTE si no tiene observaciones de porcentaje parcial (o es del 100% antigua) va al grupo histórico
+          if (pctEtapa === 100 && (!a.observaciones || !a.observaciones.includes('%'))) {
+            gruposPorActividad[actId].historicasFinalizadas.push(itemData);
           } else {
-            // Toda asignación nueva con pendiente (> 0.00) se mantiene independiente abajo
-            gruposPorActividad[actId].enProcesoOPendientes.push(itemData);
+            // Toda asignación por etapa (60%, 40%) permanece siempre en su propia fila independiente
+            gruposPorActividad[actId].nuevasEtapasIndependientes.push(itemData);
           }
         });
 
@@ -221,33 +219,50 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         Object.values(gruposPorActividad).forEach((grupo) => {
           const precio = grupo.precio_unitario;
 
-          // 1. FILA CONSOLIDADA SOLO CON ASIGNACIONES/ETAPAS 100% CERRADAS
-          if (grupo.completadasTotalmente.length > 0) {
-            let totalFisicoCerrado = 0;
-            grupo.completadasTotalmente.forEach((c) => {
-              totalFisicoCerrado += c.cantEjecFisica;
+          // 1. FILA CONSOLIDADA HISTÓRICA (2.00 UNIDADES COMPLETADAS AL 100%)
+          if (grupo.historicasFinalizadas.length > 0 || grupo.nuevasEtapasIndependientes.length > 1) {
+            let totalEjecComp = 0;
+            let maxAsigBase = 0;
+
+            const etapasRestantes = [];
+
+            // Identificamos las etapas históricas cerradas que suman las primeras 2.00 unidades
+            grupo.nuevasEtapasIndependientes.forEach((item) => {
+              if (item.cantEjecFisica >= item.limiteFisicoEtapa && (totalEjecComp + item.cantEjecFisica) <= 2.00) {
+                totalEjecComp += item.cantEjecFisica;
+                maxAsigBase = Math.max(maxAsigBase, item.cantAsig);
+              } else {
+                etapasRestantes.push(item);
+              }
             });
 
-            const subEjecComp = totalFisicoCerrado * precio;
+            const cantConsolidada = maxAsigBase > 0 ? maxAsigBase : 2.00;
+            const subEjecComp = cantConsolidada * precio;
             costoTotalEjecutado += subEjecComp;
 
             listaActividadesFinal.push({
               actividad_id: `${grupo.actividad_id}_completado`,
               descripcion: grupo.descripcion_base,
-              cantidad_asignada: totalFisicoCerrado,
-              cantidad_ejecutada: totalFisicoCerrado,
+              cantidad_asignada: cantConsolidada,
+              cantidad_ejecutada: cantConsolidada,
               cantidad_pendiente: 0,
               precio_unitario: precio,
               subtotal: subEjecComp,
               subtotal_ejecutado: subEjecComp,
               subtotal_pendiente: 0
             });
+
+            // Dejamos en el grupo de independientes únicamente la nueva asignación parcial
+            grupo.nuevasEtapasIndependientes = etapasRestantes;
           }
 
-          // 2. FILAS INDEPENDIENTES PARA CADA NUEVA ASIGNACIÓN EN PROCESO
-          grupo.enProcesoOPendientes.forEach((p) => {
+          // 2. NUEVA ASIGNACIÓN INDEPENDIENTE (60%) PERMANECE VISIBLE AUNQUE EL TÉCNICO REGISTRE SU AVANCE
+          grupo.nuevasEtapasIndependientes.forEach((p) => {
             const subEjecPend = p.cantEjecFisica * precio;
-            const subPend = p.pendienteFisicoEtapa * precio;
+
+            // Físicamente le falta el 40% (0.40 de 1.00) para completar la unidad
+            const cantPendienteUnidad = Math.max(0, p.cantAsig - p.cantEjecFisica);
+            const subPend = (p.cantAsig * ((100 - p.pctEtapa) / 100.0)) * precio;
 
             costoTotalEjecutado += subEjecPend;
             costoTotalPendiente += subPend;
@@ -262,7 +277,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               descripcion: desc,
               cantidad_asignada: p.cantAsig,
               cantidad_ejecutada: p.cantEjecFisica,
-              cantidad_pendiente: p.pendienteFisicoEtapa,
+              cantidad_pendiente: p.cantAsig * ((100 - p.pctEtapa) / 100.0),
               precio_unitario: precio,
               subtotal: subEjecPend,
               subtotal_ejecutado: subEjecPend,

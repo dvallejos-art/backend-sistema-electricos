@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - FILTRADO ESTRICTO Y CONSOLIDACIÓN DE ETAPAS DE ACTIVIDAD
+// GET /proyectos/:id/detalle-paus - CÁLCULO PONDERADO Y CONSOLIDADO SEGÚN PORCENTAJES DE ETAPA
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -151,17 +151,17 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 CONCAT('Rubro / Actividad #', b.actividad_id)
               ) AS descripcion,
 
-              -- Cantidad asignada nominal real (Toma el valor base de unidades, ej: 2.00)
+              -- Suma de la cantidad fisica asignada (2.00 + 1.00 = 3.00)
               COALESCE(
                 (
-                  SELECT MAX(CAST(pa.cantidad_presupuestada AS NUMERIC)) 
+                  SELECT SUM(CAST(pa.cantidad_presupuestada AS NUMERIC)) 
                   FROM pau_actividades pa 
                   WHERE CAST(pa.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
                     AND (CAST(pa.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pa.pau_id AS TEXT) = CAST($3 AS TEXT))
                 ), 0
-              ) AS cantidad_asignada_real,
+              ) AS cantidad_asignada_nominal,
 
-              -- Cantidad valorada ponderada por las etapas ingresadas (60% + 40% = 100% de 2.00)
+              -- Cantidad valorada ponderada considerando el % de etapa de cada asignación individual
               COALESCE(
                 (
                   SELECT SUM(
@@ -182,7 +182,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 ), 0
               ) AS cantidad_valorada,
 
-              -- Cantidad Ejecutada total
+              -- Cantidad ejecutada real registrada por los técnicos
               COALESCE(
                 (
                   SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC)) 
@@ -192,7 +192,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 ), 0
               ) AS cantidad_ejecutada,
 
-              -- Precio Unitario ($): Exclusivo del edificio actual ($1)
+              -- Precio Unitario ($) del edificio
               COALESCE(
                 (
                   SELECT pa_precio.precio_unitario 
@@ -208,7 +208,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           SELECT 
             actividad_id,
             descripcion,
-            cantidad_asignada_real AS cantidad_asignada,
+            cantidad_asignada_nominal AS cantidad_asignada,
             cantidad_valorada,
             cantidad_ejecutada,
             GREATEST(cantidad_valorada - cantidad_ejecutada, 0) AS cantidad_pendiente,

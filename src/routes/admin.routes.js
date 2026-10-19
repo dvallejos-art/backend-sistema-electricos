@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - LÓGICA DEFINITIVA DE AGRUPACIÓN Y PONDERACIÓN POR ETAPAS
+// GET /proyectos/:id/detalle-paus - FUSIÓN FORZADA DE ETAPAS COMPLEMENTARIAS (60%+40%=100%) Y MANTENIMIENTO DE NUEVAS ETAPAS
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -192,15 +192,11 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           // Tope físico asignado a la etapa (ej: 2.00 al 60% = 1.20 física)
           const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
           const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
-          
-          // Lo que le falta a la etapa para completarse (limiteFisicoEtapa - cantEjecFisica)
-          const cantPendFisicaEtapa = Math.max(0, limiteFisicoEtapa - cantEjecFisica);
 
           gruposPorActividad[actId].asignaciones.push({
             asignacion_id: a.asignacion_id,
             cantAsig,
             cantEjecFisica,
-            cantPendFisicaEtapa,
             limiteFisicoEtapa,
             pctEtapa
           });
@@ -213,37 +209,33 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         Object.values(gruposPorActividad).forEach((grupo) => {
           const precio = grupo.precio_unitario;
 
-          const asignacionesCerradas = [];
-          const asignacionesEnProceso = [];
+          // Ponderación de etapas para determinar consolidación
+          let sumaEjecutadaConsolidar = 0;
+          let maxAsigBase = 0;
+          const asignacionesNuevas = [];
 
           grupo.asignaciones.forEach((item) => {
-            // Si la asignación/etapa ya se ejecutó al 100% de su propia etapa
-            if (item.cantPendFisicaEtapa <= 0.001) {
-              asignacionesCerradas.push(item);
+            // Si la etapa ejecutó su tope nominal (1.20 de 1.20 o 0.80 de 0.80), se suma al grupo consolidado del 100%
+            if (item.cantEjecFisica >= item.limiteFisicoEtapa && item.limiteFisicoEtapa > 0) {
+              sumaEjecutadaConsolidar += item.cantEjecFisica;
+              maxAsigBase = Math.max(maxAsigBase, item.cantAsig);
             } else {
-              asignacionesEnProceso.push(item);
+              // Si aún no completa la etapa asignada, queda en proceso abajo
+              asignacionesNuevas.push(item);
             }
           });
 
-          // 1. CONSOLIDAR EN 1 SOLA FILA TODAS LAS ETAPAS/ASIGNACIONES COMPLETADAS
-          if (asignacionesCerradas.length > 0) {
-            let totalFisicoComp = 0;
-            let maxAsigBase = 0;
-
-            asignacionesCerradas.forEach((c) => {
-              totalFisicoComp += c.cantEjecFisica;
-              maxAsigBase = Math.max(maxAsigBase, c.cantAsig);
-            });
-
-            const cantMostrarConsolidada = maxAsigBase > 0 ? maxAsigBase : totalFisicoComp;
-            const subEjecComp = totalFisicoComp * precio;
+          // 1. FILA CONSOLIDADA AL 100% COMPLETADA (UNE ETAPAS 60% Y 40% COMPLEMENTARIAS)
+          if (sumaEjecutadaConsolidar > 0) {
+            const cantConsolidada = maxAsigBase > 0 ? maxAsigBase : sumaEjecutadaConsolidar;
+            const subEjecComp = cantConsolidada * precio;
             costoTotalEjecutado += subEjecComp;
 
             listaActividadesFinal.push({
               actividad_id: `${grupo.actividad_id}_completado`,
               descripcion: grupo.descripcion_base,
-              cantidad_asignada: cantMostrarConsolidada,
-              cantidad_ejecutada: totalFisicoComp,
+              cantidad_asignada: cantConsolidada,
+              cantidad_ejecutada: cantConsolidada,
               cantidad_pendiente: 0,
               precio_unitario: precio,
               subtotal: subEjecComp,
@@ -252,11 +244,9 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             });
           }
 
-          // 2. MOSTRAR CADA NUEVA ASIGNACIÓN EN PROCESO (COMO LA DEL 60% PENDIENTE) EN FILAS SEPARADAS
-          asignacionesEnProceso.forEach((p) => {
+          // 2. NUEVAS ASIGNACIONES PARCIALES O PENDIENTES ABAJO
+          asignacionesNuevas.forEach((p) => {
             const subEjecPend = p.cantEjecFisica * precio;
-            
-            // Cantidad pendiente equivalente de la asignación total (cantAsig - cantEjecFisica)
             const cantPendienteMostrar = Math.max(0, p.cantAsig - p.cantEjecFisica);
             const subPend = (cantPendienteMostrar * (p.pctEtapa / 100.0)) * precio;
 
@@ -299,7 +289,6 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 // POST /proyectos - Crear nuevo proyecto
 router.post('/proyectos', async (req, res, next) => {
   const { nombre, presupuesto_total } = req.body;

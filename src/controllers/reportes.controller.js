@@ -233,7 +233,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (EJECUTADO TOPADO A LA CANTIDAD REAL)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (CORRECCIÓN DEFINITIVA DE CONSOLIDACIÓN Y EJECUCIÓN TOPADA)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -244,7 +244,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           pa.actividad_id,
           p.proyecto_id,
           
-          -- Suma de porcentajes de etapa asignados
+          -- Suma acumulada de los porcentajes asignados en observaciones (ej: 60 + 40 = 100)
           SUM(
             CASE 
               WHEN pa.observaciones ~ '[0-9]+%' THEN 
@@ -253,18 +253,27 @@ exports.getDetalleRubrosPAU = async (req, res) => {
             END
           ) AS pct_acumulado,
 
-          -- Cantidad física real asignada (Fija en 2.00 para rubros fraccionados por etapa)
+          -- Si hay múltiples asignaciones del mismo rubro o contienen porcentaje %, fija la cantidad física real en MAX (2.00)
           CASE 
-            WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ILIKE '%etapa%' THEN 1 ELSE 0 END) > 0 THEN
+            WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ~ '[0-9]+%' THEN 1 ELSE 0 END) > 0 THEN
               MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
             ELSE
               SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
           END AS cant_asignada_fisica,
 
-          -- Suma de ejecuciones reportadas en la base de datos
+          -- Ponderación de avances ejecutados en registros_avance
           COALESCE(
             (
-              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              SELECT SUM(
+                CAST(ra.cantidad_ejecutada AS NUMERIC) * 
+                (
+                  CASE 
+                    WHEN pa_sub.observaciones ~ '[0-9]+%' THEN 
+                      CAST(SUBSTRING(pa_sub.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
+                    ELSE 1.0
+                  END
+                )
+              )
               FROM registros_avance ra
               JOIN pau_actividades pa_sub ON CAST(pa_sub.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
               WHERE CAST(pa_sub.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
@@ -272,7 +281,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
                   SELECT 1 FROM paus p2 WHERE CAST(p2.id AS TEXT) = CAST(pa_sub.pau_id AS TEXT) AND CAST(p2.codigo AS TEXT) = CAST($1 AS TEXT)
                 ))
             ), 0
-          ) AS cantidad_ejecutada_bruta
+          ) AS cantidad_ejecutada_ponderada
 
         FROM pau_actividades pa
         JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
@@ -286,9 +295,9 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         ag.pct_acumulado,
         ag.cant_asignada_fisica,
         
-        -- CAPPING / TOPADO: La cantidad ejecutada jamás puede ser mayor a la cantidad física asignada (Topa en 2.00)
-        LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) AS cantidad_ejecutada,
-        ROUND(LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
+        -- CAPPING STRICTO: La cantidad ejecutada jamás supera la cantidad física asignada base (Topa en 2.00)
+        LEAST(ag.cantidad_ejecutada_ponderada, ag.cant_asignada_fisica) AS cantidad_ejecutada,
+        ROUND(LEAST(ag.cantidad_ejecutada_ponderada, ag.cant_asignada_fisica) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
 
       FROM asignaciones_agrupadas ag
       JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(ag.actividad_id AS TEXT)
@@ -314,7 +323,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
 
       const estaCompletado = subtotalPendiente === 0 || pendienteFisica === 0;
 
-      // Oculta la etiqueta de Etapa si el acumulado ya llegó al 100%
+      // Desaparece la etiqueta de Etapa si el acumulado alcanzó el 100% o la labor está completada
       let descripcionFinal = row.descripcion_rubro;
       if (pctAcum < 100 && !estaCompletado) {
         descripcionFinal += ` [${pctAcum.toFixed(0)}% Etapa]`;

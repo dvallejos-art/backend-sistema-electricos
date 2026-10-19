@@ -65,7 +65,7 @@ router.get('/proyectos', async (req, res, next) => {
         COALESCE(
           (
             SELECT SUM(
-              CAST(ra.cantidad_ejecutada AS NUMERIC) * 
+              LEAST(CAST(ra.cantidad_ejecutada AS NUMERIC), 2.00) * 
               COALESCE(
                 (
                   SELECT pa_precio.precio_unitario 
@@ -115,7 +115,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - BASADO EXCLUSIVAMENTE EN ASIGNACIONES ACTIVAS Y CONSOLIDADO
+// GET /proyectos/:id/detalle-paus - CAPPING STRICTO Y CONSOLIDACIÓN DE EJECUCIÓN FÍSICA
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -153,12 +153,12 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 CONCAT('Rubro / Actividad #', b.actividad_id)
               ) AS descripcion,
 
-              -- Consolidación física: Si hay múltiples asignaciones del mismo rubro O si la observación contiene la palabra 'etapa', usa MAX (2.00)
+              -- Consolidación física base (MAX = 2.00 para fraccionados por etapas)
               COALESCE(
                 (
                   SELECT 
                     CASE 
-                      WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ILIKE '%etapa%' THEN 1 ELSE 0 END) > 0 THEN
+                      WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ~ '[0-9]+%' THEN 1 ELSE 0 END) > 0 THEN
                         MAX(CAST(pa.cantidad_presupuestada AS NUMERIC))
                       ELSE
                         SUM(CAST(pa.cantidad_presupuestada AS NUMERIC))
@@ -169,27 +169,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 ), 0
               ) AS cantidad_asignada_nominal,
 
-              -- Extracción flexible del porcentaje de etapa (detecta "60%", "60% Etapa", "[Etapa: 60%]", etc.)
-              COALESCE(
-                (
-                  SELECT SUM(
-                    CAST(pa.cantidad_presupuestada AS NUMERIC) * 
-                    (
-                      CASE 
-                        WHEN pa.observaciones ~ '[0-9]+%' THEN 
-                          CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
-                        WHEN pa.observaciones ILIKE '%etapa%' THEN 1.0
-                        ELSE 1.0
-                      END
-                    )
-                  )
-                  FROM pau_actividades pa 
-                  WHERE CAST(pa.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
-                    AND (CAST(pa.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pa.pau_id AS TEXT) = CAST($3 AS TEXT))
-                ), 0
-              ) AS cantidad_valorada,
-
-              -- Cantidad ejecutada vinculada a las asignaciones activas
+              -- Ejecución bruta registrada en la base de datos
               COALESCE(
                 (
                   SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC)) 
@@ -198,9 +178,9 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                   WHERE CAST(pa_link.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
                     AND (CAST(pa_link.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pa_link.pau_id AS TEXT) = CAST($3 AS TEXT))
                 ), 0
-              ) AS cantidad_ejecutada,
+              ) AS cantidad_ejecutada_bruta,
 
-              -- Precio Unitario ($) del edificio
+              -- Precio Unitario ($)
               COALESCE(
                 (
                   SELECT pa_precio.precio_unitario 
@@ -217,12 +197,13 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             actividad_id,
             descripcion,
             cantidad_asignada_nominal AS cantidad_asignada,
-            cantidad_valorada,
-            cantidad_ejecutada,
-            GREATEST(cantidad_valorada - cantidad_ejecutada, 0) AS cantidad_pendiente,
+            
+            -- CAPPING STRICTO: La cantidad ejecutada jamás supera la cantidad asignada nominal (Topa en 2.00)
+            LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal) AS cantidad_ejecutada,
+            GREATEST(cantidad_asignada_nominal - LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal), 0) AS cantidad_pendiente,
             precio_unitario,
-            (cantidad_ejecutada * precio_unitario) AS subtotal_ejecutado,
-            (GREATEST(cantidad_valorada - cantidad_ejecutada, 0) * precio_unitario) AS subtotal_pendiente
+            (LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal) * precio_unitario) AS subtotal_ejecutado,
+            (GREATEST(cantidad_asignada_nominal - LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal), 0) * precio_unitario) AS subtotal_pendiente
           FROM actividades_calculadas;
         `;
 
@@ -246,6 +227,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             cantidad_pendiente: parseFloat(a.cantidad_pendiente || 0),
             precio_unitario: parseFloat(a.precio_unitario || 0),
             subtotal: subEjec,
+            subtotal_ejecutado: subEjec,
             subtotal_pendiente: subPend
           };
         });

@@ -240,7 +240,7 @@ exports.eliminarPrecioActividad = async (req, res, next) => {
   }
 };
 
-// 4. PROYECTOS / EDIFICIOS Y AVANCE TOTAL (CORREGIDO)
+// 4. PROYECTOS / EDIFICIOS Y AVANCE TOTAL
 exports.obtenerEdificios = async (req, res, next) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
@@ -265,7 +265,7 @@ exports.obtenerEdificios = async (req, res, next) => {
           ), 0
         ) AS total_ejecutado,
 
-        -- Cálculo automático del Porcentaje de Avance Global del Edificio
+        -- Porcentaje de avance global
         CASE 
           WHEN CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) > 0 THEN
             ROUND(
@@ -327,7 +327,7 @@ exports.eliminarEdificio = async (req, res, next) => {
   }
 };
 
-// 5. RESUMEN POR DEPARTAMENTOS / PAU (CONSOLIDADO DE ETAPAS Y FILTRO ESTRICTO DE TARIFAS)
+// 5. RESUMEN POR DEPARTAMENTOS / PAU (CONSOLIDADO CORREGIDO CON EXPRESIONES REGULARES)
 exports.obtenerResumenDepartamentos = async (req, res) => {
   const { proyecto_id } = req.params;
 
@@ -339,24 +339,25 @@ exports.obtenerResumenDepartamentos = async (req, res) => {
           COALESCE(p.nombre, p.codigo) AS dpto,
           pa.actividad_id,
           
-          -- Ponderación equivalente por etapa (60% + 40% = 100% de 2.00 = 2.00)
+          -- Cantidad física real consolidada (MAX para fraccionados por etapas)
+          MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS cant_asignada_fisica,
+
+          -- Ponderación equivalente por etapa (detecta "60%", "60% Etapa", etc.)
           SUM(
             CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
             (
               CASE 
-                WHEN pa.observaciones LIKE '%[Etapa: %' THEN 
-                  CAST(SUBSTRING(pa.observaciones FROM '\\[Etapa: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
-                WHEN pa.observaciones LIKE '%[Porcentaje de rubro: %' THEN 
-                  CAST(SUBSTRING(pa.observaciones FROM '\\[Porcentaje de rubro: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
+                WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
                 ELSE 1.0
               END
             )
           ) AS cantidad_valorada,
 
-          -- Avance ejecutado vinculado a estas asignaciones
+          -- Avance ejecutado real vinculando los registros de avance
           COALESCE(
             (
-              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              SELECT MAX(CAST(ra.cantidad_ejecutada AS NUMERIC))
               FROM registros_avance ra
               JOIN pau_actividades pa_sub ON CAST(pa_sub.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
               WHERE CAST(pa_sub.pau_id AS TEXT) = CAST(p.id AS TEXT)
@@ -382,13 +383,13 @@ exports.obtenerResumenDepartamentos = async (req, res) => {
 
         -- COSTO ACUMULADO ($)
         COALESCE(
-          SUM(cantidad_ejecutada * precio_unitario), 0
+          SUM(LEAST(cantidad_ejecutada, cant_asignada_fisica) * precio_unitario), 0
         ) AS costo_acumulado,
 
-        -- COSTO PENDIENTE ($) -> 0.00 cuando lo ejecutado cubre lo valorado
+        -- COSTO PENDIENTE ($) -> 0.00 cuando lo ejecutado cubre lo asignado
         GREATEST(
           COALESCE(
-            SUM(GREATEST(cantidad_valorada - cantidad_ejecutada, 0) * precio_unitario), 0
+            SUM(GREATEST(cantidad_valorada - LEAST(cantidad_ejecutada, cant_asignada_fisica), 0) * precio_unitario), 0
           ), 0
         ) AS costo_pendiente
 

@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - MANTIENE LAS ETAPAS INCOMPLETAS (<100% TOTAL) EN FILAS INDEPENDIENTES
+// GET /proyectos/:id/detalle-paus - UNIFICA ETAPAS COMPLEMENTARIAS (60%+40%=100%) Y DEJA SUELTA LA ETAPA EN PROCESO
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -190,18 +190,14 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
           const pctEtapa = parseFloat(a.pct_etapa || 100);
 
-          // Tope físico asignado a esta etapa (ej: 2.00 * 60% = 1.20)
+          // Tope físico ejecutable en esta etapa (ej: 2.00 * 60% = 1.20)
           const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
           const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
-
-          // Pendiente real respecto a la asignación nominal (cantAsig - cantEjecFisica)
-          const cantPendienteNominal = Math.max(0, cantAsig - cantEjecFisica);
 
           gruposPorActividad[actId].asignaciones.push({
             asignacion_id: a.asignacion_id,
             cantAsig,
             cantEjecFisica,
-            cantPendienteNominal,
             limiteFisicoEtapa,
             pctEtapa
           });
@@ -214,29 +210,40 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         Object.values(gruposPorActividad).forEach((grupo) => {
           const precio = grupo.precio_unitario;
 
-          let cantCompletadaConsolidada = 0;
-          const asignacionesIncompletas = [];
+          let cantFisicaConsolidada = 0;
+          const asignacionesEnProceso = [];
+
+          // Algoritmo de Consolidación por Unidades Completadas (60% + 40% = 1.00)
+          let acumuladorParcial = 0;
+          let loteTemporal = [];
 
           grupo.asignaciones.forEach((item) => {
-            // SI la asignación no tiene porcentaje parcial (<100) O si ya no le falta saldo para llegar al 100% nominal
-            if (item.pctEtapa === 100 || item.cantPendienteNominal <= 0.001) {
-              cantCompletadaConsolidada += item.cantEjecFisica;
-            } else {
-              // Si es una asignación por etapa (<100%) que aún tiene saldo pendiente (ej: 0.80), va abajo
-              asignacionesIncompletas.push(item);
+            acumuladorParcial += item.cantEjecFisica;
+            loteTemporal.push(item);
+
+            // Si el acumulado parcial llega exactamente a un número entero de unidades o cubre el 100% nominal
+            if (Math.abs(acumuladorParcial - Math.round(acumuladorParcial)) < 0.001 && acumuladorParcial > 0) {
+              cantFisicaConsolidada += acumuladorParcial;
+              acumuladorParcial = 0;
+              loteTemporal = [];
             }
           });
 
-          // 1. FILA CONSOLIDADA AL 100% (SUMA LAS 3.00 UNIDADES HISTÓRICAS COMPLETADAS)
-          if (cantCompletadaConsolidada > 0) {
-            const subEjecComp = cantCompletadaConsolidada * precio;
+          // Las asignaciones que no cerraron ciclo del 100% quedan sueltas abajo
+          if (loteTemporal.length > 0) {
+            loteTemporal.forEach((resto) => asignacionesEnProceso.push(resto));
+          }
+
+          // 1. FILA CONSOLIDADA DE UNIDADES 100% COMPLETADAS (FUSIONA 2.00 + 1.00 = 3.00)
+          if (cantFisicaConsolidada > 0) {
+            const subEjecComp = cantFisicaConsolidada * precio;
             costoTotalEjecutado += subEjecComp;
 
             listaActividadesFinal.push({
               actividad_id: `${grupo.actividad_id}_completado`,
               descripcion: grupo.descripcion_base,
-              cantidad_asignada: cantCompletadaConsolidada,
-              cantidad_ejecutada: cantCompletadaConsolidada,
+              cantidad_asignada: cantFisicaConsolidada,
+              cantidad_ejecutada: cantFisicaConsolidada,
               cantidad_pendiente: 0,
               precio_unitario: precio,
               subtotal: subEjecComp,
@@ -245,10 +252,11 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             });
           }
 
-          // 2. FILAS INDEPENDIENTES PARA CUALQUIER NUEVA ASIGNACIÓN EN PROCESO (EJ: 2.00 AL 60%)
-          asignacionesIncompletas.forEach((p) => {
+          // 2. FILAS SEPARADAS PARA LAS ASIGNACIONES NUEVAS EN PROCESO (EJ: 2.00 AL 60%)
+          asignacionesEnProceso.forEach((p) => {
             const subEjecPend = p.cantEjecFisica * precio;
-            const subPend = p.cantPendienteNominal * precio;
+            const cantPendienteMostrar = Math.max(0, p.cantAsig - p.cantEjecFisica);
+            const subPend = (p.cantAsig * ((100 - p.pctEtapa) / 100.0)) * precio;
 
             costoTotalEjecutado += subEjecPend;
             costoTotalPendiente += subPend;
@@ -263,7 +271,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               descripcion: desc,
               cantidad_asignada: p.cantAsig,
               cantidad_ejecutada: p.cantEjecFisica,
-              cantidad_pendiente: p.cantPendienteNominal,
+              cantidad_pendiente: p.cantAsig * ((100 - p.pctEtapa) / 100.0),
               precio_unitario: precio,
               subtotal: subEjecPend,
               subtotal_ejecutado: subEjecPend,

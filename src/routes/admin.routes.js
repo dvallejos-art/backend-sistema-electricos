@@ -61,11 +61,11 @@ router.get('/proyectos', async (req, res, next) => {
         p.nombre, 
         CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
         
-        -- Suma total ejecutada en dinero ($) usando ÚNICAMENTE asignaciones activas
+        -- Suma total ejecutada en dinero ($) considerando avances valorados por etapa
         COALESCE(
           (
             SELECT SUM(
-              LEAST(CAST(ra.cantidad_ejecutada AS NUMERIC), 2.00) * 
+              CAST(ra.cantidad_ejecutada AS NUMERIC) * 
               COALESCE(
                 (
                   SELECT pa_precio.precio_unitario 
@@ -115,7 +115,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - CAPPING STRICTO Y CONSOLIDACIÓN DE EJECUCIÓN FÍSICA
+// GET /proyectos/:id/detalle-paus - DESGLOSE INDIVIDUAL DE ASIGNACIONES (100% Y PARCIALES SEPARADAS)
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -134,77 +134,48 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
     const resumenPaus = await Promise.all(
       resultPaus.rows.map(async (row) => {
         const queryActividadesBD = `
-          WITH base_actividades AS (
-            SELECT DISTINCT actividad_id 
-            FROM pau_actividades 
-            WHERE CAST(pau_id AS TEXT) = CAST($2 AS TEXT) 
-               OR CAST(pau_id AS TEXT) = CAST($3 AS TEXT)
-          ),
-          actividades_calculadas AS (
-            SELECT 
-              b.actividad_id,
-              COALESCE(
-                (
-                  SELECT ac.descripcion 
-                  FROM actividades_catalogo ac 
-                  WHERE CAST(ac.id AS TEXT) = CAST(b.actividad_id AS TEXT) 
-                  LIMIT 1
-                ),
-                CONCAT('Rubro / Actividad #', b.actividad_id)
-              ) AS descripcion,
-
-              -- Consolidación física base (MAX = 2.00 para fraccionados por etapas)
-              COALESCE(
-                (
-                  SELECT 
-                    CASE 
-                      WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ~ '[0-9]+%' THEN 1 ELSE 0 END) > 0 THEN
-                        MAX(CAST(pa.cantidad_presupuestada AS NUMERIC))
-                      ELSE
-                        SUM(CAST(pa.cantidad_presupuestada AS NUMERIC))
-                    END
-                  FROM pau_actividades pa 
-                  WHERE CAST(pa.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
-                    AND (CAST(pa.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pa.pau_id AS TEXT) = CAST($3 AS TEXT))
-                ), 0
-              ) AS cantidad_asignada_nominal,
-
-              -- Ejecución bruta registrada en la base de datos
-              COALESCE(
-                (
-                  SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC)) 
-                  FROM registros_avance ra 
-                  JOIN pau_actividades pa_link ON CAST(pa_link.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
-                  WHERE CAST(pa_link.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
-                    AND (CAST(pa_link.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pa_link.pau_id AS TEXT) = CAST($3 AS TEXT))
-                ), 0
-              ) AS cantidad_ejecutada_bruta,
-
-              -- Precio Unitario ($)
-              COALESCE(
-                (
-                  SELECT pa_precio.precio_unitario 
-                  FROM precios_actividades pa_precio 
-                  WHERE CAST(pa_precio.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT) 
-                    AND CAST(pa_precio.proyecto_id AS TEXT) = CAST($1 AS TEXT)
-                  LIMIT 1
-                ),
-                0
-              ) AS precio_unitario
-            FROM base_actividades b
-          )
           SELECT 
-            actividad_id,
-            descripcion,
-            cantidad_asignada_nominal AS cantidad_asignada,
+            pa.id AS asignacion_id,
+            pa.actividad_id,
+            COALESCE(ac.descripcion, CONCAT('Rubro / Actividad #', pa.actividad_id)) AS descripcion_base,
+            pa.observaciones,
             
-            -- CAPPING STRICTO: La cantidad ejecutada jamás supera la cantidad asignada nominal (Topa en 2.00)
-            LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal) AS cantidad_ejecutada,
-            GREATEST(cantidad_asignada_nominal - LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal), 0) AS cantidad_pendiente,
-            precio_unitario,
-            (LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal) * precio_unitario) AS subtotal_ejecutado,
-            (GREATEST(cantidad_asignada_nominal - LEAST(cantidad_ejecutada_bruta, cantidad_asignada_nominal), 0) * precio_unitario) AS subtotal_pendiente
-          FROM actividades_calculadas;
+            -- Cantidad presupuestada nominal
+            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
+
+            -- Extrae porcentaje asignado (ej: 60%, 40%, o 100% por defecto)
+            CASE 
+              WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
+              ELSE 100.0
+            END AS pct_etapa,
+
+            -- Cantidad ejecutada vinculada directamente a esta asignación específica
+            COALESCE(
+              (
+                SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC)) 
+                FROM registros_avance ra 
+                WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+              ), 0
+            ) AS cantidad_ejecutada_bruta,
+
+            -- Precio Unitario ($) del proyecto
+            COALESCE(
+              (
+                SELECT pa_precio.precio_unitario 
+                FROM precios_actividades pa_precio 
+                WHERE CAST(pa_precio.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT) 
+                  AND CAST(pa_precio.proyecto_id AS TEXT) = CAST($1 AS TEXT)
+                LIMIT 1
+              ),
+              0
+            ) AS precio_unitario
+
+          FROM pau_actividades pa
+          LEFT JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+          WHERE CAST(pa.pau_id AS TEXT) = CAST($2 AS TEXT) 
+             OR CAST(pa.pau_id AS TEXT) = CAST($3 AS TEXT)
+          ORDER BY ac.descripcion ASC, pa.id ASC;
         `;
 
         const resAct = await db.query(queryActividadesBD, [id, row.pau_id, row.codigo]);
@@ -213,19 +184,37 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         let costoTotalPendiente = 0;
 
         const actividades = resAct.rows.map((a) => {
-          const subEjec = parseFloat(a.subtotal_ejecutado || 0);
-          const subPend = parseFloat(a.subtotal_pendiente || 0);
+          const cantAsig = parseFloat(a.cantidad_asignada || 0);
+          const cantEjecBruta = parseFloat(a.cantidad_ejecutada_bruta || 0);
+          const pctEtapa = parseFloat(a.pct_etapa || 100);
+          const precioUnit = parseFloat(a.precio_unitario || 0);
+
+          // Ponderación según la etapa asignada
+          const cantidadValorada = cantAsig * (pctEtapa / 100.0);
+          
+          // Ejecución física real topada
+          const cantEjecutadaFisica = Math.min(cantEjecBruta, cantidadValorada);
+          const cantPendienteFisica = Math.max(0, cantidadValorada - cantEjecutadaFisica);
+
+          const subEjec = cantEjecutadaFisica * precioUnit;
+          const subPend = cantPendienteFisica * precioUnit;
 
           costoTotalEjecutado += subEjec;
           costoTotalPendiente += subPend;
 
+          // Etiqueta indicadora para la vista
+          let descripcionFinal = a.descripcion_base;
+          if (pctEtapa < 100 && subPend > 0) {
+            descripcionFinal += ` [${pctEtapa.toFixed(0)}% Etapa]`;
+          }
+
           return {
-            actividad_id: a.actividad_id,
-            descripcion: a.descripcion,
-            cantidad_asignada: parseFloat(a.cantidad_asignada || 0),
-            cantidad_ejecutada: parseFloat(a.cantidad_ejecutada || 0),
-            cantidad_pendiente: parseFloat(a.cantidad_pendiente || 0),
-            precio_unitario: parseFloat(a.precio_unitario || 0),
+            actividad_id: `${a.actividad_id}_${a.asignacion_id}`,
+            descripcion: descripcionFinal,
+            cantidad_asignada: cantAsig,
+            cantidad_ejecutada: cantEjecutadaFisica,
+            cantidad_pendiente: cantPendienteFisica,
+            precio_unitario: precioUnit,
             subtotal: subEjec,
             subtotal_ejecutado: subEjec,
             subtotal_pendiente: subPend

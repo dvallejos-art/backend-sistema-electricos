@@ -22,14 +22,12 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
     let queryParams = [];
     let paramIndex = 1;
 
-    // Filtro por Edificio / Proyecto
     if (proyecto_id && proyecto_id !== 'todos') {
       whereConditions.push(`CAST(p.proyecto_id AS TEXT) = $${paramIndex}`);
       queryParams.push(String(proyecto_id));
       paramIndex++;
     }
 
-    // Filtro por Departamento / PAU
     if (pau_id && pau_id !== 'todos') {
       whereConditions.push(`CAST(pa.pau_id AS TEXT) = $${paramIndex}`);
       queryParams.push(String(pau_id));
@@ -43,7 +41,6 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
       paramIndex++;
     }
 
-    // Filtro por Técnico
     if (tecnico_id && tecnico_id !== 'todos') {
       whereConditions.push(`(
         CAST(pa.tecnico_id AS TEXT) = $${paramIndex} 
@@ -53,14 +50,12 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
       paramIndex++;
     }
 
-    // Filtro por Actividad
     if (actividad_id && actividad_id !== 'todos') {
       whereConditions.push(`CAST(pa.actividad_id AS TEXT) = $${paramIndex}`);
       queryParams.push(String(actividad_id));
       paramIndex++;
     }
 
-    // Filtros por Rango de Fechas
     if (fecha_inicio) {
       if (tipo_fecha === 'ejecucion') {
         whereConditions.push(`(
@@ -95,7 +90,6 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
       paramIndex++;
     }
 
-    // Filtro por Estado Calculado
     if (estado && estado !== 'todos') {
       if (estado === 'pendiente') {
         whereConditions.push(`COALESCE(avances.total_ejecutado, 0) = 0`);
@@ -239,7 +233,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (CORRECCIÓN FLEXIBLE DE ETAPAS)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (EJECUTADO LIMITADO A LA CANTIDAD FÍSICA REAL)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -250,7 +244,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           pa.actividad_id,
           p.proyecto_id,
           
-          -- Si hay múltiples asignaciones del mismo rubro O contienen la palabra 'Etapa' / '%', consolida en el MAX nominal (2.00)
+          -- Consolida la cantidad física asignada real (2.00)
           CASE 
             WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ILIKE '%etapa%' THEN 1 ELSE 0 END) > 0 THEN
               MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
@@ -258,7 +252,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
               SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
           END AS cant_asignada_fisica,
 
-          -- Extrae el porcentaje exacto sin importar cómo venga escrito (ej: "60% Etapa", "[Etapa: 60%]", etc.)
+          -- Cantidad valorada ponderada según los % asignados
           SUM(
             CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
             (
@@ -271,7 +265,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
             )
           ) AS cantidad_presupuestada_valorada,
 
-          -- Avance total ejecutado reportado
+          -- Avance ejecutado real (limitado a la cantidad física asignada para evitar sobre-ejecución visual)
           COALESCE(
             (
               SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -282,7 +276,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
                   SELECT 1 FROM paus p2 WHERE CAST(p2.id AS TEXT) = CAST(pa_sub.pau_id AS TEXT) AND CAST(p2.codigo AS TEXT) = CAST($1 AS TEXT)
                 ))
             ), 0
-          ) AS cantidad_ejecutada
+          ) AS cantidad_ejecutada_bruta
 
         FROM pau_actividades pa
         JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
@@ -295,8 +289,8 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         COALESCE(pre.precio_unitario, 0) AS precio_unitario,
         ag.cant_asignada_fisica,
         ag.cantidad_presupuestada_valorada,
-        ag.cantidad_ejecutada,
-        ROUND(ag.cantidad_ejecutada * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
+        LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) AS cantidad_ejecutada,
+        ROUND(LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
       FROM asignaciones_agrupadas ag
       JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(ag.actividad_id AS TEXT)
       LEFT JOIN precios_actividades pre 

@@ -115,7 +115,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - BASADO EXCLUSIVAMENTE EN ASIGNACIONES ACTIVAS
+// GET /proyectos/:id/detalle-paus - BASADO EXCLUSIVAMENTE EN ASIGNACIONES ACTIVAS Y CONSOLIDADO
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -135,7 +135,6 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
       resultPaus.rows.map(async (row) => {
         const queryActividadesBD = `
           WITH base_actividades AS (
-            -- ÚNICAMENTE TOMA LAS ACTIVIDADES CON ASIGNACIÓN ACTIVA EN EL DEPARTAMENTO
             SELECT DISTINCT actividad_id 
             FROM pau_actividades 
             WHERE CAST(pau_id AS TEXT) = CAST($2 AS TEXT) 
@@ -154,10 +153,16 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 CONCAT('Rubro / Actividad #', b.actividad_id)
               ) AS descripcion,
 
-              -- Suma de la cantidad física asignada activa
+              -- Consolidación física: Si tiene asignaciones por etapa ([Etapa: X%]), fija en MAX (2.00)
               COALESCE(
                 (
-                  SELECT SUM(CAST(pa.cantidad_presupuestada AS NUMERIC)) 
+                  SELECT 
+                    CASE 
+                      WHEN SUM(CASE WHEN pa.observaciones LIKE '%[Etapa: %' THEN 1 ELSE 0 END) > 0 THEN
+                        MAX(CAST(pa.cantidad_presupuestada AS NUMERIC))
+                      ELSE
+                        SUM(CAST(pa.cantidad_presupuestada AS NUMERIC))
+                    END
                   FROM pau_actividades pa 
                   WHERE CAST(pa.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
                     AND (CAST(pa.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pa.pau_id AS TEXT) = CAST($3 AS TEXT))

@@ -327,53 +327,74 @@ exports.eliminarEdificio = async (req, res, next) => {
   }
 };
 
-// 5. RESUMEN POR DEPARTAMENTOS / PAU (CORREGIDO PARA COSTO PENDIENTE $0.00 SI NO HAY TARIFA)
+// 5. RESUMEN POR DEPARTAMENTOS / PAU (CONSOLIDADO DE ETAPAS Y FILTRO ESTRICTO DE TARIFAS)
 exports.obtenerResumenDepartamentos = async (req, res) => {
   const { proyecto_id } = req.params;
 
   try {
     const query = `
+      WITH asignaciones_consolidadas AS (
+        SELECT 
+          p.id AS pau_id,
+          COALESCE(p.nombre, p.codigo) AS dpto,
+          pa.actividad_id,
+          
+          -- Ponderación equivalente por etapa (60% + 40% = 100% de 2.00 = 2.00)
+          SUM(
+            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
+            (
+              CASE 
+                WHEN pa.observaciones LIKE '%[Etapa: %' THEN 
+                  CAST(SUBSTRING(pa.observaciones FROM '\\[Etapa: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
+                WHEN pa.observaciones LIKE '%[Porcentaje de rubro: %' THEN 
+                  CAST(SUBSTRING(pa.observaciones FROM '\\[Porcentaje de rubro: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
+                ELSE 1.0
+              END
+            )
+          ) AS cantidad_valorada,
+
+          -- Avance ejecutado vinculado a estas asignaciones
+          COALESCE(
+            (
+              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              FROM registros_avance ra
+              JOIN pau_actividades pa_sub ON CAST(pa_sub.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
+              WHERE CAST(pa_sub.pau_id AS TEXT) = CAST(p.id AS TEXT)
+                AND CAST(pa_sub.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+            ), 0
+          ) AS cantidad_ejecutada,
+
+          -- Tarifa específica para el proyecto actual
+          COALESCE(pre.precio_unitario, 0) AS precio_unitario
+
+        FROM paus p
+        LEFT JOIN pau_actividades pa 
+          ON CAST(pa.pau_id AS TEXT) = CAST(p.id AS TEXT)
+        LEFT JOIN precios_actividades pre 
+          ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+         AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+        WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
+        GROUP BY p.id, p.nombre, p.codigo, pa.actividad_id, pre.precio_unitario
+      )
       SELECT 
-        p.id AS pau_id,
-        COALESCE(p.nombre, p.codigo) AS dpto,
+        pau_id,
+        dpto,
 
         -- COSTO ACUMULADO ($)
         COALESCE(
-          SUM(
-            CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pre.precio_unitario, 0)
-          ), 0
+          SUM(cantidad_ejecutada * precio_unitario), 0
         ) AS costo_acumulado,
 
-        -- COSTO PENDIENTE ($) -> Devuelve 0.00 si no existe tarifa para este edificio
+        -- COSTO PENDIENTE ($) -> 0.00 cuando lo ejecutado cubre lo valorado
         GREATEST(
           COALESCE(
-            SUM(
-              (CAST(pa.cantidad_presupuestada AS NUMERIC) - COALESCE(ra_suma.total_ejecutado, 0)) * 
-              COALESCE(pre.precio_unitario, 0)
-            ), 0
+            SUM(GREATEST(cantidad_valorada - cantidad_ejecutada, 0) * precio_unitario), 0
           ), 0
         ) AS costo_pendiente
 
-      FROM paus p
-      LEFT JOIN pau_actividades pa 
-        ON CAST(pa.pau_id AS TEXT) = CAST(p.id AS TEXT)
-      LEFT JOIN registros_avance ra 
-        ON CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
-        
-      -- JOIN ESTRICTO: Solo vincula la tarifa si coincide el proyecto
-      LEFT JOIN precios_actividades pre 
-        ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
-       AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
-
-      LEFT JOIN (
-        SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado
-        FROM registros_avance
-        GROUP BY pau_actividad_id
-      ) ra_suma ON CAST(ra_suma.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
-
-      WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
-      GROUP BY p.id, p.nombre, p.codigo
-      ORDER BY p.codigo ASC;
+      FROM asignaciones_consolidadas
+      GROUP BY pau_id, dpto
+      ORDER BY dpto ASC;
     `;
 
     const result = await pool.query(query, [proyecto_id]);

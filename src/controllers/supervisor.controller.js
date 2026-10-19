@@ -243,7 +243,7 @@ exports.asignarTrabajo = async (req, res) => {
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
       secId,
-      parseFloat(cantidad), // Guarda la cantidad física íntegra (ej. 2.00 o 6.00)
+      parseFloat(cantidad),
       obsFinales,
       fecha_inicio || null,
       fecha_fin || null
@@ -332,15 +332,41 @@ exports.editarAsignacion = async (req, res) => {
 };
 
 /**
- * 10. Eliminar asignación por ID
+ * 10. Eliminar asignación por ID (CON ELIMINACIÓN EN CASCADA DE AVANCES REGISTRADOS)
  */
 exports.eliminarAsignacion = async (req, res) => {
   const { id } = req.params;
+  const client = await pool.connect();
+
   try {
-    await pool.query('DELETE FROM pau_actividades WHERE id = $1;', [id]);
-    res.json({ mensaje: 'Asignación eliminada correctamente.' });
+    await client.query('BEGIN');
+
+    // 1. Eliminar los registros de avance de técnicos asociados a la asignación
+    await client.query(
+      `DELETE FROM registros_avance 
+       WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
+      [id]
+    );
+
+    // 2. Eliminar la asignación principal
+    const result = await client.query(
+      `DELETE FROM pau_actividades 
+       WHERE CAST(id AS TEXT) = CAST($1 AS TEXT);`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'La asignación no existe o ya fue eliminada.' });
+    }
+
+    res.json({ mensaje: 'Asignación e historial de avances asociados eliminados correctamente.' });
   } catch (err) {
-    console.error('Error al eliminar asignación:', err);
+    await client.query('ROLLBACK');
+    console.error('Error al eliminar asignación en cascada:', err);
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 };

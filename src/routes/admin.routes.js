@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - AGRUPACIÓN STRICTA DE TRABAJOS AL 100% Y VISTA DE NUEVAS ETAPAS (60%)
+// GET /proyectos/:id/detalle-paus - CONSOLIDACIÓN EXACTA: AGRUPA TRABAJOS AL 100% Y SEPARA NUEVAS ETAPAS PENDIENTES
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -172,7 +172,6 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
 
         const resAct = await db.query(queryAsignacionesBD, [id, row.pau_id, row.codigo]);
 
-        // Agrupar asignaciones
         const gruposPorActividad = {};
 
         resAct.rows.forEach((a) => {
@@ -198,13 +197,14 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           const itemData = {
             asignacion_id: a.asignacion_id,
             cantAsig,
+            cantEjecBruta,
             cantEjecFisica,
             cantPendFisica,
             pctEtapa
           };
 
-          // Si es al 100% y no tiene saldo pendiente, va al grupo completadas
-          if (pctEtapa === 100 && cantPendFisica <= 0.001) {
+          // REGLA CLAVE: Si ya se ejecutó completamente esa asignación/etapa (sin pendiente), va a COMPLETADAS
+          if (cantPendFisica <= 0.001 || cantEjecBruta >= cantAsig) {
             gruposPorActividad[actId].completadas.push(itemData);
           } else {
             gruposPorActividad[actId].pendientes.push(itemData);
@@ -218,17 +218,19 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         Object.values(gruposPorActividad).forEach((grupo) => {
           const precio = grupo.precio_unitario;
 
-          // 1. CONSOLIDAR COMPLETADAS EN UNA FILA
+          // 1. CONSOLIDAR TODAS LAS ASIGNACIONES CERRADAS/COMPLETADAS EN UNA SOLA FILA
           if (grupo.completadas.length > 0) {
             let totalEjecComp = 0;
+            let maxCantAsig = 0;
 
             grupo.completadas.forEach((c) => {
               totalEjecComp += c.cantEjecFisica;
+              maxCantAsig = Math.max(maxCantAsig, c.cantAsig);
             });
 
-            const baseFisicaReal = 2.00;
-            const cantEjecTope = Math.min(totalEjecComp > 0 ? totalEjecComp : baseFisicaReal, baseFisicaReal);
-            const subEjecComp = cantEjecTope * precio;
+            // Recupera las 2.00 unidades físicas nominales completadas
+            const baseFisicaReal = maxCantAsig > 0 ? maxCantAsig : 2.00;
+            const subEjecComp = baseFisicaReal * precio;
 
             costoTotalEjecutado += subEjecComp;
 
@@ -236,7 +238,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               actividad_id: `${grupo.actividad_id}_completado`,
               descripcion: grupo.descripcion_base,
               cantidad_asignada: baseFisicaReal,
-              cantidad_ejecutada: cantEjecTope,
+              cantidad_ejecutada: baseFisicaReal,
               cantidad_pendiente: 0,
               precio_unitario: precio,
               subtotal: subEjecComp,
@@ -245,12 +247,14 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             });
           }
 
-          // 2. MOSTRAR ASIGNACIONES PARCIALES O PENDIENTES (60%) ABAJO
+          // 2. MOSTRAR CADA NUEVA ASIGNACIÓN EN PROCESO O AL 60% EN FILA SEPARADA
           grupo.pendientes.forEach((p) => {
-            const subEjecPend = p.cantEjecFisica * precio;
-            
-            // Si la asignación de etapa no tiene avances registrados, se calcula la cantidad pendiente nominal
-            const cantPendienteMostrar = p.cantPendFisica > 0 ? p.cantPendFisica : (p.cantAsig * (p.pctEtapa / 100.0));
+            const cantidadValorada = p.cantAsig * (p.pctEtapa / 100.0);
+            const cantEjecFisica = Math.min(p.cantEjecBruta, cantidadValorada);
+            const cantPendFisica = Math.max(0, cantidadValorada - cantEjecFisica);
+
+            const cantPendienteMostrar = cantPendFisica > 0 ? cantPendFisica : cantidadValorada;
+            const subEjecPend = cantEjecFisica * precio;
             const subPend = cantPendienteMostrar * precio;
 
             costoTotalEjecutado += subEjecPend;
@@ -265,7 +269,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               actividad_id: `${grupo.actividad_id}_pend_${p.asignacion_id}`,
               descripcion: desc,
               cantidad_asignada: p.cantAsig,
-              cantidad_ejecutada: p.cantEjecFisica,
+              cantidad_ejecutada: cantEjecFisica,
               cantidad_pendiente: cantPendienteMostrar,
               precio_unitario: precio,
               subtotal: subEjecPend,

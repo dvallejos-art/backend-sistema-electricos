@@ -327,73 +327,70 @@ exports.eliminarEdificio = async (req, res, next) => {
   }
 };
 
-// 5. RESUMEN POR DEPARTAMENTOS / PAU (CONSOLIDADO CORREGIDO CON EXPRESIONES REGULARES)
+// 5. RESUMEN POR DEPARTAMENTOS / PAU (CÁLCULO EXACTO DE COSTO ACUMULADO Y COSTO PENDIENTE DE ETAPAS)
 exports.obtenerResumenDepartamentos = async (req, res) => {
   const { proyecto_id } = req.params;
 
   try {
     const query = `
-      WITH asignaciones_consolidadas AS (
+      WITH desglosado_asignaciones AS (
         SELECT 
           p.id AS pau_id,
           COALESCE(p.nombre, p.codigo) AS dpto,
+          pa.id AS asignacion_id,
           pa.actividad_id,
+          CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cant_asig,
           
-          -- Cantidad física real consolidada (MAX para fraccionados por etapas)
-          MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS cant_asignada_fisica,
+          -- Extrae el % asignado (ej: 60, 40 o 100 por defecto)
+          CASE 
+            WHEN pa.observaciones ~ '[0-9]+%' THEN 
+              CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
+            ELSE 100.0
+          END AS pct_etapa,
 
-          -- Ponderación equivalente por etapa (detecta "60%", "60% Etapa", etc.)
-          SUM(
-            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
-            (
-              CASE 
-                WHEN pa.observaciones ~ '[0-9]+%' THEN 
-                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
-                ELSE 1.0
-              END
-            )
-          ) AS cantidad_valorada,
-
-          -- Avance ejecutado real vinculando los registros de avance
+          -- Cantidad ejecutada real en la base de datos para esta asignación
           COALESCE(
             (
-              SELECT MAX(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
               FROM registros_avance ra
-              JOIN pau_actividades pa_sub ON CAST(pa_sub.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
-              WHERE CAST(pa_sub.pau_id AS TEXT) = CAST(p.id AS TEXT)
-                AND CAST(pa_sub.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+              WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
             ), 0
-          ) AS cantidad_ejecutada,
+          ) AS cant_ejec_bruta,
 
-          -- Tarifa específica para el proyecto actual
+          -- Tarifa/Precio unitario para el proyecto actual
           COALESCE(pre.precio_unitario, 0) AS precio_unitario
 
         FROM paus p
-        LEFT JOIN pau_actividades pa 
-          ON CAST(pa.pau_id AS TEXT) = CAST(p.id AS TEXT)
+        JOIN pau_actividades pa ON CAST(pa.pau_id AS TEXT) = CAST(p.id AS TEXT)
         LEFT JOIN precios_actividades pre 
           ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
          AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
         WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
-        GROUP BY p.id, p.nombre, p.codigo, pa.actividad_id, pre.precio_unitario
+      ),
+      calculo_ponderado AS (
+        SELECT 
+          pau_id,
+          dpto,
+          precio_unitario,
+          cant_asig,
+          cant_ejec_bruta,
+          pct_etapa,
+          (cant_asig * (pct_etapa / 100.0)) AS cantidad_valorada,
+          LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))) AS cantidad_ejecutada_fisica,
+          
+          -- Determina si está completado para sumar costo acumulado o costo pendiente
+          CASE 
+            WHEN cant_ejec_bruta >= cant_asig OR (cant_ejec_bruta >= (cant_asig * (pct_etapa / 100.0)) AND pct_etapa = 100) THEN 0.00
+            ELSE GREATEST(0, (cant_asig * (pct_etapa / 100.0)) - LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))))
+          END AS cantidad_pendiente_fisica
+        FROM desglosado_asignaciones
       )
       SELECT 
         pau_id,
         dpto,
-
-        -- COSTO ACUMULADO ($)
-        COALESCE(
-          SUM(LEAST(cantidad_ejecutada, cant_asignada_fisica) * precio_unitario), 0
-        ) AS costo_acumulado,
-
-        -- COSTO PENDIENTE ($) -> 0.00 cuando lo ejecutado cubre lo asignado
-        GREATEST(
-          COALESCE(
-            SUM(GREATEST(cantidad_valorada - LEAST(cantidad_ejecutada, cant_asignada_fisica), 0) * precio_unitario), 0
-          ), 0
-        ) AS costo_pendiente
-
-      FROM asignaciones_consolidadas
+        COALESCE(SUM(cantidad_ejecutada_fisica * precio_unitario), 0) AS costo_acumulado,
+        COALESCE(SUM(cantidad_pendiente_fisica * precio_unitario), 0) AS costo_pendiente
+      FROM calculo_ponderado
       GROUP BY pau_id, dpto
       ORDER BY dpto ASC;
     `;

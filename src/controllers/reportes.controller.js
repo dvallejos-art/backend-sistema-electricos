@@ -233,45 +233,69 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. DETALLE DE RUBROS SEPARADO POR ÍTEMS COMPLETADOS (100%) Y PENDIENTES EN ETAPAS
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (EJECUTADO TOPADO A LA CANTIDAD REAL)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
   try {
     const query = `
+      WITH asignaciones_agrupadas AS (
+        SELECT 
+          pa.actividad_id,
+          p.proyecto_id,
+          
+          -- Suma de porcentajes de etapa asignados
+          SUM(
+            CASE 
+              WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
+              ELSE 100.0
+            END
+          ) AS pct_acumulado,
+
+          -- Cantidad física real asignada (Fija en 2.00 para rubros fraccionados por etapa)
+          CASE 
+            WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ILIKE '%etapa%' THEN 1 ELSE 0 END) > 0 THEN
+              MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
+            ELSE
+              SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
+          END AS cant_asignada_fisica,
+
+          -- Suma de ejecuciones reportadas en la base de datos
+          COALESCE(
+            (
+              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              FROM registros_avance ra
+              JOIN pau_actividades pa_sub ON CAST(pa_sub.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
+              WHERE CAST(pa_sub.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+                AND (CAST(pa_sub.pau_id AS TEXT) = CAST($1 AS TEXT) OR EXISTS (
+                  SELECT 1 FROM paus p2 WHERE CAST(p2.id AS TEXT) = CAST(pa_sub.pau_id AS TEXT) AND CAST(p2.codigo AS TEXT) = CAST($1 AS TEXT)
+                ))
+            ), 0
+          ) AS cantidad_ejecutada_bruta
+
+        FROM pau_actividades pa
+        JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+        WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
+        GROUP BY pa.actividad_id, p.proyecto_id
+      )
       SELECT 
-        pa.id AS asignacion_id,
-        pa.actividad_id,
+        ag.actividad_id,
         ac.descripcion AS descripcion_rubro,
         COALESCE(pre.precio_unitario, 0) AS precio_unitario,
+        ag.pct_acumulado,
+        ag.cant_asignada_fisica,
         
-        -- Cantidad física nominal asignada a este bloque
-        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cant_asignada_fisica,
+        -- CAPPING / TOPADO: La cantidad ejecutada jamás puede ser mayor a la cantidad física asignada (Topa en 2.00)
+        LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) AS cantidad_ejecutada,
+        ROUND(LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
 
-        -- Extrae el porcentaje asignado (ej: 100%, 60%, 40%)
-        CASE 
-          WHEN pa.observaciones ~ '[0-9]+%' THEN 
-            CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
-          ELSE 100.0
-        END AS pct_etapa,
-
-        -- Cantidad ejecutada real en la asignación
-        COALESCE(
-          (
-            SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
-            FROM registros_avance ra
-            WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
-          ), 0
-        ) AS cantidad_ejecutada
-
-      FROM pau_actividades pa
-      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
-      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      FROM asignaciones_agrupadas ag
+      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(ag.actividad_id AS TEXT)
       LEFT JOIN precios_actividades pre 
-        ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
-       AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
-      WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
-      ORDER BY ac.descripcion ASC, pa.id ASC;
+        ON CAST(pre.actividad_id AS TEXT) = CAST(ag.actividad_id AS TEXT)
+       AND CAST(pre.proyecto_id AS TEXT) = CAST(ag.proyecto_id AS TEXT)
+      ORDER BY ac.descripcion ASC;
     `;
 
     const result = await pool.query(query, [pau_id]);
@@ -279,30 +303,28 @@ exports.getDetalleRubrosPAU = async (req, res) => {
     const rubrosFormateados = result.rows.map((row) => {
       const ejecutada = parseFloat(row.cantidad_ejecutada || 0);
       const asignadaFisica = parseFloat(row.cant_asignada_fisica || 0);
-      const pctEtapa = parseFloat(row.pct_etapa || 100);
       const precio = parseFloat(row.precio_unitario || 0);
+      const pctAcum = parseFloat(row.pct_acumulado || 100);
 
-      // Evaluación del avance según el porcentaje asignado
-      const cantidadValorada = asignadaFisica * (pctEtapa / 100.0);
-      const subtotalEjecutado = ejecutada * precio;
+      const subtotalEjecutado = parseFloat(row.subtotal_ejecutado || 0);
+      const subtotalTotal = asignadaFisica * precio;
       
-      const pendienteFisica = Math.max(0, cantidadValorada - ejecutada);
-      const subtotalPendiente = precio === 0 ? 0 : Math.max(0, (cantidadValorada * precio) - subtotalEjecutado);
-      
+      const pendienteFisica = Math.max(0, asignadaFisica - ejecutada);
+      const subtotalPendiente = precio === 0 ? 0 : Math.max(0, subtotalTotal - subtotalEjecutado);
+
       const estaCompletado = subtotalPendiente === 0 || pendienteFisica === 0;
 
-      // Formato dinámico según si es un ítem al 100% o en etapa parcial
+      // Oculta la etiqueta de Etapa si el acumulado ya llegó al 100%
       let descripcionFinal = row.descripcion_rubro;
-      if (pctEtapa < 100 && !estaCompletado) {
-        const pctFaltante = (100 - pctEtapa).toFixed(0);
-        descripcionFinal += ` [${pctEtapa.toFixed(0)}% Etapa]`;
+      if (pctAcum < 100 && !estaCompletado) {
+        descripcionFinal += ` [${pctAcum.toFixed(0)}% Etapa]`;
       }
 
       return {
         descripcion_rubro: descripcionFinal,
         cantidad_asignada: asignadaFisica.toFixed(2),
         cantidad_ejecutada: ejecutada.toFixed(2),
-        cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${pendienteFisica.toFixed(2)} (${(100 - pctEtapa).toFixed(0)}% Pendiente)`,
+        cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${pendienteFisica.toFixed(2)} (Pendiente)`,
         precio_unitario: precio.toFixed(2),
         subtotal_ejecutado: subtotalEjecutado.toFixed(2),
         subtotal_pendiente: subtotalPendiente.toFixed(2),

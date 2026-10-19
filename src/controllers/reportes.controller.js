@@ -233,7 +233,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (ETIQUETA Y SUMA FÍSICA DINÁMICA)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (LÓGICA CONSOLIDADA ESTRICTA)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -244,45 +244,22 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           pa.actividad_id,
           p.proyecto_id,
           
-          -- Suma acumulada de porcentajes de etapa (ej: 60% + 40% = 100%)
+          -- Suma acumulada de los % asignados
           SUM(
             CASE 
               WHEN pa.observaciones ~ '[0-9]+%' THEN 
                 CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
               ELSE 100.0
             END
-          ) AS pct_acumulado_etapas,
+          ) AS pct_acumulado,
 
-          -- Cantidad física real consolidada: 
-          -- Si las etapas suman 100% o más, consolida al MAX (2.00). 
-          -- Si se agregan nuevas asignaciones completas, suma proporcionalmente
-          SUM(
-            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
-            (
-              CASE 
-                WHEN pa.observaciones ~ '[0-9]+%' THEN 
-                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
-                ELSE 1.0
-              END
-            )
-          ) AS cant_asignada_fisica,
+          -- Cantidad física base (MAX = 2.00 para fraccionados por etapa)
+          MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS cant_asignada_fisica,
 
-          -- Cantidad valorada
-          SUM(
-            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
-            (
-              CASE 
-                WHEN pa.observaciones ~ '[0-9]+%' THEN 
-                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
-                ELSE 1.0
-              END
-            )
-          ) AS cantidad_presupuestada_valorada,
-
-          -- Avance ejecutado real
+          -- Avance real en registros de avance (sin duplicar)
           COALESCE(
             (
-              SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+              SELECT MAX(CAST(ra.cantidad_ejecutada AS NUMERIC))
               FROM registros_avance ra
               JOIN pau_actividades pa_sub ON CAST(pa_sub.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
               WHERE CAST(pa_sub.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
@@ -290,7 +267,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
                   SELECT 1 FROM paus p2 WHERE CAST(p2.id AS TEXT) = CAST(pa_sub.pau_id AS TEXT) AND CAST(p2.codigo AS TEXT) = CAST($1 AS TEXT)
                 ))
             ), 0
-          ) AS cantidad_ejecutada_bruta
+          ) AS cantidad_ejecutada_real
 
         FROM pau_actividades pa
         JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
@@ -301,11 +278,10 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         ag.actividad_id,
         ac.descripcion AS descripcion_rubro,
         COALESCE(pre.precio_unitario, 0) AS precio_unitario,
-        ag.pct_acumulado_etapas,
+        ag.pct_acumulado,
         ag.cant_asignada_fisica,
-        ag.cantidad_presupuestada_valorada,
-        LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) AS cantidad_ejecutada,
-        ROUND(LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
+        LEAST(ag.cantidad_ejecutada_real, ag.cant_asignada_fisica) AS cantidad_ejecutada,
+        ROUND(LEAST(ag.cantidad_ejecutada_real, ag.cant_asignada_fisica) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
       FROM asignaciones_agrupadas ag
       JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(ag.actividad_id AS TEXT)
       LEFT JOIN precios_actividades pre 
@@ -318,33 +294,29 @@ exports.getDetalleRubrosPAU = async (req, res) => {
 
     const rubrosFormateados = result.rows.map((row) => {
       const ejecutada = parseFloat(row.cantidad_ejecutada || 0);
-      const valorada = parseFloat(row.cantidad_presupuestada_valorada || 0);
       const asignadaFisica = parseFloat(row.cant_asignada_fisica || 0);
       const precio = parseFloat(row.precio_unitario || 0);
-      const pctEtapaAcumulado = parseFloat(row.pct_acumulado_etapas || 100);
+      const pctAcum = parseFloat(row.pct_acumulado || 100);
 
       const subtotalEjecutado = parseFloat(row.subtotal_ejecutado || 0);
-      const subtotalTotal = valorada * precio;
+      const subtotalTotal = asignadaFisica * precio;
       
-      const pendienteFisica = Math.max(0, valorada - ejecutada);
+      const pendienteFisica = Math.max(0, asignadaFisica - ejecutada);
       const subtotalPendiente = precio === 0 ? 0 : Math.max(0, subtotalTotal - subtotalEjecutado);
-      
-      const pctAvance = valorada > 0 ? Math.min(100, (ejecutada / valorada) * 100) : 100;
-      const pctPendiente = (100 - pctAvance).toFixed(0);
 
       const estaCompletado = subtotalPendiente === 0 || pendienteFisica === 0;
 
-      // Generar descripción dinámica de la etiqueta de etapa
+      // Limpiar etiqueta amarilla si las etapas completan el 100%
       let descripcionFinal = row.descripcion_rubro;
-      if (pctEtapaAcumulado < 100) {
-        descripcionFinal += ` [${pctEtapaAcumulado.toFixed(0)}% Etapa]`;
+      if (pctAcum < 100 && !estaCompletado) {
+        descripcionFinal += ` [${pctAcum.toFixed(0)}% Etapa]`;
       }
 
       return {
         descripcion_rubro: descripcionFinal,
         cantidad_asignada: asignadaFisica.toFixed(2),
         cantidad_ejecutada: ejecutada.toFixed(2),
-        cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${pendienteFisica.toFixed(2)} (${pctPendiente}% Pendiente)`,
+        cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${pendienteFisica.toFixed(2)} (Pendiente)`,
         precio_unitario: precio.toFixed(2),
         subtotal_ejecutado: subtotalEjecutado.toFixed(2),
         subtotal_pendiente: subtotalPendiente.toFixed(2),

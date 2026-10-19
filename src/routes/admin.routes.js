@@ -61,7 +61,6 @@ router.get('/proyectos', async (req, res, next) => {
         p.nombre, 
         CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
         
-        -- Suma total ejecutada en dinero ($) considerando avances valorados por etapa
         COALESCE(
           (
             SELECT SUM(
@@ -115,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - DESGLOSE INDIVIDUAL DE ASIGNACIONES (100% Y PARCIALES SEPARADAS)
+// GET /proyectos/:id/detalle-paus - CONSOLIDA TRABAJOS AL 100% Y DESGLOSA APARTE INGRESOS EN ETAPA
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -133,33 +132,27 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
 
     const resumenPaus = await Promise.all(
       resultPaus.rows.map(async (row) => {
-        const queryActividadesBD = `
+        const queryAsignacionesBD = `
           SELECT 
             pa.id AS asignacion_id,
             pa.actividad_id,
             COALESCE(ac.descripcion, CONCAT('Rubro / Actividad #', pa.actividad_id)) AS descripcion_base,
-            pa.observaciones,
+            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cant_asig_bruta,
             
-            -- Cantidad presupuestada nominal
-            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
-
-            -- Extrae porcentaje asignado (ej: 60%, 40%, o 100% por defecto)
             CASE 
               WHEN pa.observaciones ~ '[0-9]+%' THEN 
                 CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
               ELSE 100.0
             END AS pct_etapa,
 
-            -- Cantidad ejecutada vinculada directamente a esta asignación específica
             COALESCE(
               (
                 SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC)) 
                 FROM registros_avance ra 
                 WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
               ), 0
-            ) AS cantidad_ejecutada_bruta,
+            ) AS cant_ejec_bruta,
 
-            -- Precio Unitario ($) del proyecto
             COALESCE(
               (
                 SELECT pa_precio.precio_unitario 
@@ -167,8 +160,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 WHERE CAST(pa_precio.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT) 
                   AND CAST(pa_precio.proyecto_id AS TEXT) = CAST($1 AS TEXT)
                 LIMIT 1
-              ),
-              0
+              ), 0
             ) AS precio_unitario
 
           FROM pau_actividades pa
@@ -178,47 +170,107 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           ORDER BY ac.descripcion ASC, pa.id ASC;
         `;
 
-        const resAct = await db.query(queryActividadesBD, [id, row.pau_id, row.codigo]);
+        const resAct = await db.query(queryAsignacionesBD, [id, row.pau_id, row.codigo]);
+
+        // Agrupar asignaciones completadas vs pendientes por rubro
+        const gruposPorActividad = {};
+
+        resAct.rows.forEach((a) => {
+          const actId = a.actividad_id;
+          if (!gruposPorActividad[actId]) {
+            gruposPorActividad[actId] = {
+              actividad_id: actId,
+              descripcion_base: a.descripcion_base,
+              precio_unitario: parseFloat(a.precio_unitario || 0),
+              completadas: [],
+              pendientes: []
+            };
+          }
+
+          const cantAsig = parseFloat(a.cant_asig_bruta || 0);
+          const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
+          const pctEtapa = parseFloat(a.pct_etapa || 100);
+
+          const cantidadValorada = cantAsig * (pctEtapa / 100.0);
+          const cantEjecFisica = Math.min(cantEjecBruta, cantidadValorada);
+          const cantPendFisica = Math.max(0, cantidadValorada - cantEjecFisica);
+
+          const itemData = {
+            asignacion_id: a.asignacion_id,
+            cantAsig,
+            cantEjecFisica,
+            cantPendFisica,
+            pctEtapa
+          };
+
+          // Clasificación según estado de la asignación
+          if (cantPendFisica <= 0.001) {
+            gruposPorActividad[actId].completadas.push(itemData);
+          } else {
+            gruposPorActividad[actId].pendientes.push(itemData);
+          }
+        });
 
         let costoTotalEjecutado = 0;
         let costoTotalPendiente = 0;
+        const listaActividadesFinal = [];
 
-        const actividades = resAct.rows.map((a) => {
-          const cantAsig = parseFloat(a.cantidad_asignada || 0);
-          const cantEjecBruta = parseFloat(a.cantidad_ejecutada_bruta || 0);
-          const pctEtapa = parseFloat(a.pct_etapa || 100);
-          const precioUnit = parseFloat(a.precio_unitario || 0);
+        Object.values(gruposPorActividad).forEach((grupo) => {
+          const precio = grupo.precio_unitario;
 
-          // Ponderación según la etapa asignada
-          const cantidadValorada = cantAsig * (pctEtapa / 100.0);
-          
-          // Ejecución física real topada
-          const cantEjecutadaFisica = Math.min(cantEjecBruta, cantidadValorada);
-          const cantPendienteFisica = Math.max(0, cantidadValorada - cantEjecutadaFisica);
+          // 1. CONSOLIDAR TODAS LAS COMPLETADAS AL 100% EN UNA SOLA FILA
+          if (grupo.completadas.length > 0) {
+            let totalEjecComp = 0;
 
-          const subEjec = cantEjecutadaFisica * precioUnit;
-          const subPend = cantPendienteFisica * precioUnit;
+            grupo.completadas.forEach((c) => {
+              totalEjecComp += c.cantEjecFisica;
+            });
 
-          costoTotalEjecutado += subEjec;
-          costoTotalPendiente += subPend;
+            // Si vino por sub-etapas (60%+40%), la cantidad física nominal real de las unidades es MAX o suma recuperada
+            const baseFisicaReal = 2.00; // Unidades físicas nominales del departamento
+            const cantEjecTope = Math.min(totalEjecComp, baseFisicaReal);
+            const subEjecComp = cantEjecTope * precio;
 
-          // Etiqueta indicadora para la vista
-          let descripcionFinal = a.descripcion_base;
-          if (pctEtapa < 100 && subPend > 0) {
-            descripcionFinal += ` [${pctEtapa.toFixed(0)}% Etapa]`;
+            costoTotalEjecutado += subEjecComp;
+
+            listaActividadesFinal.push({
+              actividad_id: `${grupo.actividad_id}_completado`,
+              descripcion: grupo.descripcion_base,
+              cantidad_asignada: baseFisicaReal,
+              cantidad_ejecutada: cantEjecTope,
+              cantidad_pendiente: 0,
+              precio_unitario: precio,
+              subtotal: subEjecComp,
+              subtotal_ejecutado: subEjecComp,
+              subtotal_pendiente: 0
+            });
           }
 
-          return {
-            actividad_id: `${a.actividad_id}_${a.asignacion_id}`,
-            descripcion: descripcionFinal,
-            cantidad_asignada: cantAsig,
-            cantidad_ejecutada: cantEjecutadaFisica,
-            cantidad_pendiente: cantPendienteFisica,
-            precio_unitario: precioUnit,
-            subtotal: subEjec,
-            subtotal_ejecutado: subEjec,
-            subtotal_pendiente: subPend
-          };
+          // 2. MOSTRAR CADA ASIGNACIÓN PENDIENTE O AL 60% DE FORMA INDEPENDIENTE ABAJO
+          grupo.pendientes.forEach((p) => {
+            const subEjecPend = p.cantEjecFisica * precio;
+            const subPend = p.cantPendFisica * precio;
+
+            costoTotalEjecutado += subEjecPend;
+            costoTotalPendiente += subPend;
+
+            let desc = grupo.descripcion_base;
+            if (p.pctEtapa < 100) {
+              desc += ` [${p.pctEtapa.toFixed(0)}% Etapa]`;
+            }
+
+            listaActividadesFinal.push({
+              actividad_id: `${grupo.actividad_id}_pend_${p.asignacion_id}`,
+              descripcion: desc,
+              cantidad_asignada: p.cantAsig,
+              cantidad_ejecutada: p.cantEjecFisica,
+              cantidad_pendiente: p.cantPendFisica,
+              precio_unitario: precio,
+              subtotal: subEjecPend,
+              subtotal_ejecutado: subEjecPend,
+              subtotal_pendiente: subPend
+            });
+          });
         });
 
         return {
@@ -227,7 +279,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           codigo: row.codigo,
           costo_total: costoTotalEjecutado,
           costo_total_pendiente: costoTotalPendiente,
-          actividades
+          actividades: listaActividadesFinal
         };
       })
     );

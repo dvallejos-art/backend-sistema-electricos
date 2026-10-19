@@ -233,7 +233,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (EJECUTADO LIMITADO A LA CANTIDAD FÍSICA REAL)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (ETIQUETA Y SUMA FÍSICA DINÁMICA)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -244,28 +244,42 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           pa.actividad_id,
           p.proyecto_id,
           
-          -- Consolida la cantidad física asignada real (2.00)
-          CASE 
-            WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ILIKE '%etapa%' THEN 1 ELSE 0 END) > 0 THEN
-              MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
-            ELSE
-              SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
-          END AS cant_asignada_fisica,
+          -- Suma acumulada de porcentajes de etapa (ej: 60% + 40% = 100%)
+          SUM(
+            CASE 
+              WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
+              ELSE 100.0
+            END
+          ) AS pct_acumulado_etapas,
 
-          -- Cantidad valorada ponderada según los % asignados
+          -- Cantidad física real consolidada: 
+          -- Si las etapas suman 100% o más, consolida al MAX (2.00). 
+          -- Si se agregan nuevas asignaciones completas, suma proporcionalmente
           SUM(
             CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
             (
               CASE 
                 WHEN pa.observaciones ~ '[0-9]+%' THEN 
                   CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
-                WHEN pa.observaciones ILIKE '%etapa%' THEN 1.0
+                ELSE 1.0
+              END
+            )
+          ) AS cant_asignada_fisica,
+
+          -- Cantidad valorada
+          SUM(
+            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
+            (
+              CASE 
+                WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
                 ELSE 1.0
               END
             )
           ) AS cantidad_presupuestada_valorada,
 
-          -- Avance ejecutado real (limitado a la cantidad física asignada para evitar sobre-ejecución visual)
+          -- Avance ejecutado real
           COALESCE(
             (
               SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -287,6 +301,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         ag.actividad_id,
         ac.descripcion AS descripcion_rubro,
         COALESCE(pre.precio_unitario, 0) AS precio_unitario,
+        ag.pct_acumulado_etapas,
         ag.cant_asignada_fisica,
         ag.cantidad_presupuestada_valorada,
         LEAST(ag.cantidad_ejecutada_bruta, ag.cant_asignada_fisica) AS cantidad_ejecutada,
@@ -306,6 +321,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
       const valorada = parseFloat(row.cantidad_presupuestada_valorada || 0);
       const asignadaFisica = parseFloat(row.cant_asignada_fisica || 0);
       const precio = parseFloat(row.precio_unitario || 0);
+      const pctEtapaAcumulado = parseFloat(row.pct_acumulado_etapas || 100);
 
       const subtotalEjecutado = parseFloat(row.subtotal_ejecutado || 0);
       const subtotalTotal = valorada * precio;
@@ -318,8 +334,14 @@ exports.getDetalleRubrosPAU = async (req, res) => {
 
       const estaCompletado = subtotalPendiente === 0 || pendienteFisica === 0;
 
+      // Generar descripción dinámica de la etiqueta de etapa
+      let descripcionFinal = row.descripcion_rubro;
+      if (pctEtapaAcumulado < 100) {
+        descripcionFinal += ` [${pctEtapaAcumulado.toFixed(0)}% Etapa]`;
+      }
+
       return {
-        descripcion_rubro: row.descripcion_rubro,
+        descripcion_rubro: descripcionFinal,
         cantidad_asignada: asignadaFisica.toFixed(2),
         cantidad_ejecutada: ejecutada.toFixed(2),
         cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${pendienteFisica.toFixed(2)} (${pctPendiente}% Pendiente)`,

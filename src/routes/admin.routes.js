@@ -153,12 +153,12 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 CONCAT('Rubro / Actividad #', b.actividad_id)
               ) AS descripcion,
 
-              -- Consolidación física: Si tiene asignaciones por etapa ([Etapa: X%]), fija en MAX (2.00)
+              -- Consolidación física: Si hay múltiples asignaciones del mismo rubro O si la observación contiene la palabra 'etapa', usa MAX (2.00)
               COALESCE(
                 (
                   SELECT 
                     CASE 
-                      WHEN SUM(CASE WHEN pa.observaciones LIKE '%[Etapa: %' THEN 1 ELSE 0 END) > 0 THEN
+                      WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ILIKE '%etapa%' THEN 1 ELSE 0 END) > 0 THEN
                         MAX(CAST(pa.cantidad_presupuestada AS NUMERIC))
                       ELSE
                         SUM(CAST(pa.cantidad_presupuestada AS NUMERIC))
@@ -169,17 +169,16 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 ), 0
               ) AS cantidad_asignada_nominal,
 
-              -- Cantidad valorada ponderada según % de etapa de las asignaciones activas
+              -- Extracción flexible del porcentaje de etapa (detecta "60%", "60% Etapa", "[Etapa: 60%]", etc.)
               COALESCE(
                 (
                   SELECT SUM(
                     CAST(pa.cantidad_presupuestada AS NUMERIC) * 
                     (
                       CASE 
-                        WHEN pa.observaciones LIKE '%[Etapa: %' THEN 
-                          CAST(SUBSTRING(pa.observaciones FROM '\\[Etapa: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
-                        WHEN pa.observaciones LIKE '%[Porcentaje de rubro: %' THEN 
-                          CAST(SUBSTRING(pa.observaciones FROM '\\[Porcentaje de rubro: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
+                        WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                          CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
+                        WHEN pa.observaciones ILIKE '%etapa%' THEN 1.0
                         ELSE 1.0
                       END
                     )

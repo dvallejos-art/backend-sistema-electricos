@@ -239,7 +239,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS POR ETAPAS (CORREGIDO DE RAÍZ)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES CONSOLIDADOS (CORRECCIÓN FLEXIBLE DE ETAPAS)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -250,30 +250,28 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           pa.actividad_id,
           p.proyecto_id,
           
-          -- Si hay asignaciones divididas por etapa [Etapa: X%], consolida en la cantidad nominal real (MAX)
-          -- Si son asignaciones nominales independientes sin etapa, suma sus cantidades
+          -- Si hay múltiples asignaciones del mismo rubro O contienen la palabra 'Etapa' / '%', consolida en el MAX nominal (2.00)
           CASE 
-            WHEN SUM(CASE WHEN pa.observaciones LIKE '%[Etapa: %' THEN 1 ELSE 0 END) > 0 THEN
+            WHEN COUNT(pa.id) > 1 OR SUM(CASE WHEN pa.observaciones ILIKE '%etapa%' THEN 1 ELSE 0 END) > 0 THEN
               MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
             ELSE
               SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
           END AS cant_asignada_fisica,
 
-          -- Cantidad valorada equivalente calculada según el porcentaje asignado en cada etapa
+          -- Extrae el porcentaje exacto sin importar cómo venga escrito (ej: "60% Etapa", "[Etapa: 60%]", etc.)
           SUM(
             CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
             (
               CASE 
-                WHEN pa.observaciones LIKE '%[Etapa: %' THEN 
-                  CAST(SUBSTRING(pa.observaciones FROM '\\[Etapa: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
-                WHEN pa.observaciones LIKE '%[Porcentaje de rubro: %' THEN 
-                  CAST(SUBSTRING(pa.observaciones FROM '\\[Porcentaje de rubro: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
+                WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
+                WHEN pa.observaciones ILIKE '%etapa%' THEN 1.0
                 ELSE 1.0
               END
             )
           ) AS cantidad_presupuestada_valorada,
 
-          -- Avance total ejecutado reportado para estas asignaciones
+          -- Avance total ejecutado reportado
           COALESCE(
             (
               SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -324,7 +322,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
       const pctAvance = valorada > 0 ? Math.min(100, (ejecutada / valorada) * 100) : 100;
       const pctPendiente = (100 - pctAvance).toFixed(0);
 
-      const estaCompletado = subtotalPendiente === 0 && pendienteFisica === 0;
+      const estaCompletado = subtotalPendiente === 0 || pendienteFisica === 0;
 
       return {
         descripcion_rubro: row.descripcion_rubro,

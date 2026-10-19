@@ -326,3 +326,60 @@ exports.eliminarEdificio = async (req, res, next) => {
     next(error);
   }
 };
+
+// 5. RESUMEN POR DEPARTAMENTOS / PAU (CORREGIDO PARA COSTO PENDIENTE $0.00 SI NO HAY TARIFA)
+exports.obtenerResumenDepartamentos = async (req, res) => {
+  const { proyecto_id } = req.params;
+
+  try {
+    const query = `
+      SELECT 
+        p.id AS pau_id,
+        COALESCE(p.nombre, p.codigo) AS dpto,
+
+        -- COSTO ACUMULADO ($)
+        COALESCE(
+          SUM(
+            CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pre.precio_unitario, 0)
+          ), 0
+        ) AS costo_acumulado,
+
+        -- COSTO PENDIENTE ($) -> Devuelve 0.00 si no existe tarifa para este edificio
+        GREATEST(
+          COALESCE(
+            SUM(
+              (CAST(pa.cantidad_presupuestada AS NUMERIC) - COALESCE(ra_suma.total_ejecutado, 0)) * 
+              COALESCE(pre.precio_unitario, 0)
+            ), 0
+          ), 0
+        ) AS costo_pendiente
+
+      FROM paus p
+      LEFT JOIN pau_actividades pa 
+        ON CAST(pa.pau_id AS TEXT) = CAST(p.id AS TEXT)
+      LEFT JOIN registros_avance ra 
+        ON CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+        
+      -- JOIN ESTRICTO: Solo vincula la tarifa si coincide el proyecto
+      LEFT JOIN precios_actividades pre 
+        ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+       AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+
+      LEFT JOIN (
+        SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado
+        FROM registros_avance
+        GROUP BY pau_actividad_id
+      ) ra_suma ON CAST(ra_suma.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+
+      WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
+      GROUP BY p.id, p.nombre, p.codigo
+      ORDER BY p.codigo ASC;
+    `;
+
+    const result = await pool.query(query, [proyecto_id]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener resumen de departamentos:', err);
+    res.status(500).json({ error: err.message });
+  }
+};

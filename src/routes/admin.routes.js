@@ -61,7 +61,7 @@ router.get('/proyectos', async (req, res, next) => {
         p.nombre, 
         CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
         
-        -- Suma total ejecutada en dinero ($)
+        -- Suma total ejecutada en dinero ($) usando ÚNICAMENTE el precio de este proyecto
         COALESCE(
           (
             SELECT SUM(
@@ -72,12 +72,6 @@ router.get('/proyectos', async (req, res, next) => {
                   FROM precios_actividades pa_precio 
                   WHERE CAST(pa_precio.actividad_id AS TEXT) = CAST(ra.actividad_id AS TEXT) 
                     AND CAST(pa_precio.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
-                  LIMIT 1
-                ),
-                (
-                  SELECT pa_precio.precio_unitario 
-                  FROM precios_actividades pa_precio 
-                  WHERE CAST(pa_precio.actividad_id AS TEXT) = CAST(ra.actividad_id AS TEXT)
                   LIMIT 1
                 ),
                 0
@@ -120,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - CÁLCULOS 100% DESDE BASE DE DATOS
+// GET /proyectos/:id/detalle-paus - FILTRADO ESTRICTO POR EDIFICIO (SIN PRECIOS FANTASMA)
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -177,19 +171,13 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 ), 0
               ) AS cantidad_ejecutada,
 
-              -- Precio Unitario ($)
+              -- Precio Unitario ($): Únicamente el asignado a ESTE proyecto ($1). Si no existe, es 0.
               COALESCE(
                 (
                   SELECT pa_precio.precio_unitario 
                   FROM precios_actividades pa_precio 
                   WHERE CAST(pa_precio.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT) 
                     AND CAST(pa_precio.proyecto_id AS TEXT) = CAST($1 AS TEXT)
-                  LIMIT 1
-                ),
-                (
-                  SELECT pa_precio.precio_unitario 
-                  FROM precios_actividades pa_precio 
-                  WHERE CAST(pa_precio.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
                   LIMIT 1
                 ),
                 0

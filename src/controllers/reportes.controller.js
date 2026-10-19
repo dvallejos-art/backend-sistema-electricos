@@ -239,7 +239,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES PONDERADOS POR PORCENTAJE DE ETAPA (FILTRADO STRICTO POR EDIFICIO)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES PONDERADOS POR PORCENTAJE DE ETAPA (CORREGIDO)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -249,13 +249,13 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         pa.actividad_id,
         ac.descripcion AS descripcion_rubro,
         
-        -- Obtiene la tarifa ESPECÍFICA del proyecto del PAU. Si no existe, devuelve 0.00 (no el precio de otros edificios)
+        -- Tarifa especifica del proyecto (si no hay tarifa para este edificio devuelve 0)
         COALESCE(pre.precio_unitario, 0) AS precio_unitario,
         
-        -- Suma nominal de unidades físicas asignadas
+        -- Cantidad fisica asignada
         SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS cant_asignada_fisica,
         
-        -- Suma ponderada equivalente según porcentajes asignados
+        -- Cantidad valorada segun la etapa ingresada
         SUM(
           CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
           (
@@ -269,7 +269,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           )
         ) AS cantidad_presupuestada_valorada,
         
-        -- Suma real de avances ejecutados
+        -- Cantidad ejecutada real
         COALESCE(avances.total_ejecutado, 0) AS cantidad_ejecutada,
         
         -- Subtotal financiero ejecutado
@@ -279,7 +279,7 @@ exports.getDetalleRubrosPAU = async (req, res) => {
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
       
-      -- JOIN estricto por actividad_id Y por el proyecto_id del PAU
+      -- LEFT JOIN estricto por actividad_id Y por proyecto_id del PAU
       LEFT JOIN precios_actividades pre 
         ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
        AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
@@ -304,20 +304,24 @@ exports.getDetalleRubrosPAU = async (req, res) => {
 
       const subtotalEjecutado = parseFloat(row.subtotal_ejecutado || 0);
       const subtotalTotal = valorada * precio;
-      const subtotalPendiente = Math.max(0, subtotalTotal - subtotalEjecutado);
+      
+      // Si el precio es 0, el subtotal pendiente es estrictamente 0.00
+      const subtotalPendiente = precio === 0 ? 0 : Math.max(0, subtotalTotal - subtotalEjecutado);
       
       const pctAvance = valorada > 0 ? Math.min(100, (ejecutada / valorada) * 100) : 100;
       const pctPendiente = (100 - pctAvance).toFixed(0);
+
+      const estaCompletado = subtotalPendiente === 0 || ejecutada >= valorada;
 
       return {
         descripcion_rubro: row.descripcion_rubro,
         cantidad_asignada: parseFloat(row.cant_asignada_fisica).toFixed(2),
         cantidad_ejecutada: ejecutada.toFixed(2),
-        cantidad_pendiente: subtotalPendiente === 0 ? "0.00 (Completado)" : `${(valorada - ejecutada).toFixed(2)} (${pctPendiente}% Pendiente)`,
+        cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${(valorada - ejecutada).toFixed(2)} (${pctPendiente}% Pendiente)`,
         precio_unitario: precio.toFixed(2),
         subtotal_ejecutado: subtotalEjecutado.toFixed(2),
         subtotal_pendiente: subtotalPendiente.toFixed(2),
-        completado: subtotalPendiente === 0
+        completado: estaCompletado
       };
     });
 

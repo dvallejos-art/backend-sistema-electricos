@@ -17,6 +17,7 @@ const obtenerReporte = reportesController?.obtenerReporteAsignaciones || ((req, 
 const exportarExcel = reportesController?.exportarExcel || ((req, res) => res.status(500).json({ error: 'Controlador exportarExcel no definido' }));
 const getResumen = reportesController?.getResumenAvancePAU || ((req, res) => res.json({ mensaje: 'Resumen PAU' }));
 const getHistorial = reportesController?.getHistorialPorTecnico || ((req, res) => res.json({ mensaje: 'Historial' }));
+const getRubros = reportesController?.getDetalleRubrosPAU || ((req, res) => res.json([]));
 
 // 1. Ruta principal para filtrado dinámico (Edificio, Depto, Fechas, Técnico, Estado)
 router.get('/filtrar', obtenerReporte);
@@ -24,8 +25,9 @@ router.get('/filtrar', obtenerReporte);
 // 2. Ruta para exportación a Excel / CSV
 router.get('/exportar-excel', exportarExcel);
 
-// 3. Rutas auxiliares de resumen e historial
+// 3. Rutas auxiliares de resumen, rubros e historial
 router.get('/pau/:pau_id/resumen-avance', getResumen);
+router.get('/pau/:pau_id/rubros', getRubros); // <--- NUEVA RUTA CONECTADA
 router.get('/tecnico/:empleado_id/historial', getHistorial);
 
 module.exports = router;

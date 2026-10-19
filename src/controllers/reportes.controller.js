@@ -238,3 +238,82 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
     next(error);
   }
 };
+
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES PONDERADOS POR PORCENTAJE DE ETAPA (NUEVO)
+exports.getDetalleRubrosPAU = async (req, res) => {
+  const { pau_id } = req.params;
+
+  try {
+    const query = `
+      SELECT 
+        pa.actividad_id,
+        ac.descripcion AS descripcion_rubro,
+        COALESCE(ac.precio_unitario, 0) AS precio_unitario,
+        
+        -- Suma nominal de unidades físicas asignadas
+        SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS cant_asignada_fisica,
+        
+        -- Suma ponderada equivalente según porcentajes asignados
+        SUM(
+          CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
+          (
+            CASE 
+              WHEN pa.observaciones LIKE '%[Etapa: %' THEN 
+                CAST(SUBSTRING(pa.observaciones FROM '\\[Etapa: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
+              WHEN pa.observaciones LIKE '%[Porcentaje de rubro: %' THEN 
+                CAST(SUBSTRING(pa.observaciones FROM '\\[Porcentaje de rubro: ([0-9.]+)%\\]') AS NUMERIC) / 100.0
+              ELSE 1.0
+            END
+          )
+        ) AS cantidad_presupuestada_valorada,
+        
+        -- Suma real de avances ejecutados
+        COALESCE(avances.total_ejecutado, 0) AS cantidad_ejecutada,
+        
+        -- Subtotal financiero ejecutado
+        ROUND(COALESCE(avances.total_ejecutado, 0) * COALESCE(ac.precio_unitario, 0), 2) AS subtotal_ejecutado
+
+      FROM pau_actividades pa
+      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      LEFT JOIN (
+        SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado
+        FROM registros_avance
+        GROUP BY pau_actividad_id
+      ) avances ON CAST(avances.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+      WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
+      GROUP BY pa.actividad_id, ac.descripcion, ac.precio_unitario, avances.total_ejecutado
+      ORDER BY ac.descripcion ASC;
+    `;
+
+    const result = await pool.query(query, [pau_id]);
+
+    const rubrosFormateados = result.rows.map((row) => {
+      const ejecutada = parseFloat(row.cantidad_ejecutada || 0);
+      const valorada = parseFloat(row.cantidad_presupuestada_valorada || 0);
+      const precio = parseFloat(row.precio_unitario || 0);
+
+      const subtotalEjecutado = parseFloat(row.subtotal_ejecutado || 0);
+      const subtotalTotal = valorada * precio;
+      const subtotalPendiente = Math.max(0, subtotalTotal - subtotalEjecutado);
+      
+      const pctAvance = valorada > 0 ? Math.min(100, (ejecutada / valorada) * 100) : 100;
+      const pctPendiente = (100 - pctAvance).toFixed(0);
+
+      return {
+        descripcion_rubro: row.descripcion_rubro,
+        cantidad_asignada: parseFloat(row.cant_asignada_fisica).toFixed(2),
+        cantidad_ejecutada: ejecutada.toFixed(2),
+        cantidad_pendiente: subtotalPendiente === 0 ? "0.00 (Completado)" : `${(valorada - ejecutada).toFixed(2)} (${pctPendiente}% Pendiente)`,
+        precio_unitario: precio.toFixed(2),
+        subtotal_ejecutado: subtotalEjecutado.toFixed(2),
+        subtotal_pendiente: subtotalPendiente.toFixed(2),
+        completado: subtotalPendiente === 0
+      };
+    });
+
+    res.json(rubrosFormateados);
+  } catch (err) {
+    console.error('Error al obtener detalle de rubros:', err);
+    res.status(500).json({ error: err.message });
+  }
+};

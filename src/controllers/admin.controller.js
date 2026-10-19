@@ -327,7 +327,7 @@ exports.eliminarEdificio = async (req, res, next) => {
   }
 };
 
-// 5. RESUMEN POR DEPARTAMENTOS / PAU (CÁLCULO EXACTO DE COSTO ACUMULADO Y COSTO PENDIENTE DE ETAPAS)
+// 5. RESUMEN POR DEPARTAMENTOS / PAU (CÁLCULO EXACTO DE COSTO ACUMULADO Y PENDIENTE NOMINAL)
 exports.obtenerResumenDepartamentos = async (req, res) => {
   const { proyecto_id } = req.params;
 
@@ -375,13 +375,15 @@ exports.obtenerResumenDepartamentos = async (req, res) => {
           cant_asig,
           cant_ejec_bruta,
           pct_etapa,
-          (cant_asig * (pct_etapa / 100.0)) AS cantidad_valorada,
+          (cant_asig * (pct_etapa / 100.0)) AS limite_fisico_etapa,
           LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))) AS cantidad_ejecutada_fisica,
           
-          -- Determina si está completado para sumar costo acumulado o costo pendiente
+          -- Calcula el pendiente NOMINAL REAL (solo es 0 si la ejecución alcanza el 100% nominal de la asignación)
           CASE 
-            WHEN cant_ejec_bruta >= cant_asig OR (cant_ejec_bruta >= (cant_asig * (pct_etapa / 100.0)) AND pct_etapa = 100) THEN 0.00
-            ELSE GREATEST(0, (cant_asig * (pct_etapa / 100.0)) - LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))))
+            WHEN LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))) >= cant_asig OR pct_etapa = 100 THEN
+              GREATEST(0, cant_asig - LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))))
+            ELSE 
+              GREATEST(0, cant_asig - LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))))
           END AS cantidad_pendiente_fisica
         FROM desglosado_asignaciones
       )

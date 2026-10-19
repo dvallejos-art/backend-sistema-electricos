@@ -1,7 +1,7 @@
 // src/controllers/reportes.controller.js
 const pool = require('../config/db');
 
-// 1. OBTENER REPORTE DE ASIGNACIONES CON VALORES MONETARIOS ($)
+// 1. OBTENER REPORTE DE ASIGNACIONES CON PONDERACIÓN FÍSICA EXACTA ($)
 exports.obtenerReporteAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
@@ -92,11 +92,11 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
 
     if (estado && estado !== 'todos') {
       if (estado === 'pendiente') {
-        whereConditions.push(`COALESCE(avances.total_ejecutado, 0) = 0`);
+        whereConditions.push(`COALESCE(avances.total_ejecutado_bruto, 0) = 0`);
       } else if (estado === 'en_proceso') {
-        whereConditions.push(`COALESCE(avances.total_ejecutado, 0) > 0 AND COALESCE(avances.total_ejecutado, 0) < pa.cantidad_presupuestada`);
+        whereConditions.push(`COALESCE(avances.total_ejecutado_bruto, 0) > 0 AND COALESCE(avances.total_ejecutado_bruto, 0) < pa.cantidad_presupuestada`);
       } else if (estado === 'realizada') {
-        whereConditions.push(`COALESCE(avances.total_ejecutado, 0) >= pa.cantidad_presupuestada`);
+        whereConditions.push(`COALESCE(avances.total_ejecutado_bruto, 0) >= pa.cantidad_presupuestada`);
       }
     }
 
@@ -111,18 +111,59 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
         ac.unidad_medida,
         COALESCE(u1.nombre, 'Sin Asignar') AS tecnico_principal,
         COALESCE(u2.nombre, 'N/A') AS tecnico_acompanante,
-        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
-        COALESCE(avances.total_ejecutado, 0) AS cantidad_ejecutada,
-        GREATEST(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(avances.total_ejecutado, 0), 0) AS saldo_disponible,
         
-        -- PRECIO UNITARIO Y SUBTOTALES CALCULADOS
+        -- PORCENTAJE DE LA ETAPA EXTRAÍDO DE OBSERVACIONES
+        CASE 
+          WHEN pa.observaciones ~ '[0-9]+%' THEN 
+            CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
+          ELSE 100.0
+        END AS pct_etapa,
+
+        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
+        
+        -- CANTIDAD FÍSICA PONDERADA REAL EJECUTADA
+        LEAST(
+          COALESCE(avances.total_ejecutado_bruto, 0) * (
+            CASE 
+              WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
+              ELSE 1.0
+            END
+          ),
+          CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * (
+            CASE 
+              WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
+              ELSE 1.0
+            END
+          )
+        ) AS cantidad_ejecutada,
+
+        -- PRECIO UNITARIO Y SUBTOTALES EXACTOS
         COALESCE(pre.precio_unitario, 0) AS precio_unitario,
-        ROUND(COALESCE(avances.total_ejecutado, 0) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado,
-        ROUND(GREATEST(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(avances.total_ejecutado, 0), 0) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_pendiente,
+        
+        ROUND(
+          LEAST(
+            COALESCE(avances.total_ejecutado_bruto, 0) * (
+              CASE 
+                WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
+                ELSE 1.0
+              END
+            ),
+            CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * (
+              CASE 
+                WHEN pa.observaciones ~ '[0-9]+%' THEN 
+                  CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC) / 100.0
+                ELSE 1.0
+              END
+            )
+          ) * COALESCE(pre.precio_unitario, 0), 2
+        ) AS subtotal_ejecutado,
 
         CASE 
-          WHEN COALESCE(avances.total_ejecutado, 0) >= pa.cantidad_presupuestada THEN 'Realizada'
-          WHEN COALESCE(avances.total_ejecutado, 0) > 0 THEN 'En Proceso'
+          WHEN COALESCE(avances.total_ejecutado_bruto, 0) >= pa.cantidad_presupuestada THEN 'Realizada'
+          WHEN COALESCE(avances.total_ejecutado_bruto, 0) > 0 THEN 'En Proceso'
           ELSE 'Pendiente'
         END AS estado_calculado,
         TO_CHAR(pa.creado_en, 'YYYY-MM-DD') AS fecha_asignacion
@@ -137,7 +178,7 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
         ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT) 
        AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
       LEFT JOIN (
-        SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado
+        SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado_bruto
         FROM registros_avance
         GROUP BY pau_actividad_id
       ) avances ON CAST(avances.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
@@ -153,7 +194,7 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
   }
 };
 
-// 2. EXPORTAR A EXCEL (.CSV) CON VALORES Y PRECIOS
+// 2. EXPORTAR A EXCEL (.CSV) CON PONDERACIÓN COINCIDENTE
 exports.exportarExcel = async (req, res) => {
   try {
     req.query.limite = 10000;
@@ -171,15 +212,16 @@ exports.exportarExcel = async (req, res) => {
           const tecAcomp = String(row.tecnico_acompanante || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
           const estado = String(row.estado_calculado || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
 
-          const cantPres = parseFloat(row.cantidad_presupuestada || 0).toFixed(2);
-          const cantEjec = parseFloat(row.cantidad_ejecutada || 0).toFixed(2);
-          const saldo = parseFloat(row.saldo_disponible || 0).toFixed(2);
+          const pctEtapa = parseFloat(row.pct_etapa || 100);
+          const cantPresFisica = parseFloat(row.cantidad_presupuestada || 0) * (pctEtapa / 100.0);
+          const cantEjecFisica = parseFloat(row.cantidad_ejecutada || 0);
+          const saldoFisico = Math.max(0, cantPresFisica - cantEjecFisica);
 
-          const precioUnit = parseFloat(row.precio_unitario || 0).toFixed(2);
-          const subEjec = parseFloat(row.subtotal_ejecutado || 0).toFixed(2);
-          const subPend = parseFloat(row.subtotal_pendiente || 0).toFixed(2);
+          const precioUnit = parseFloat(row.precio_unitario || 0);
+          const subEjec = cantEjecFisica * precioUnit;
+          const subPend = saldoFisico * precioUnit;
 
-          csv += `${row.asignacion_id};"${edificioLimpio}";"${dptoLimpio}";"${actividadLimpia}";"${tecLider}";"${tecAcomp}";${cantPres};${cantEjec};${saldo};${precioUnit};${subEjec};${subPend};"${estado}";"${row.fecha_asignacion}"\n`;
+          csv += `${row.asignacion_id};"${edificioLimpio}";"${dptoLimpio}";"${actividadLimpia}";"${tecLider}";"${tecAcomp}";${cantPresFisica.toFixed(2)};${cantEjecFisica.toFixed(2)};${saldoFisico.toFixed(2)};${precioUnit.toFixed(2)};${subEjec.toFixed(2)};${subPend.toFixed(2)};"${estado}";"${row.fecha_asignacion}"\n`;
         });
 
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -195,7 +237,6 @@ exports.exportarExcel = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 // 3. OBTENER RESUMEN DE AVANCE DE UN PAU
 exports.getResumenAvancePAU = async (req, res, next) => {
   const { pau_id } = req.params;

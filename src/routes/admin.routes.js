@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - LÓGICA LIMPIA Y DIRECTA PARA PRUEBAS DESDE ZERO
+// GET /proyectos/:id/detalle-paus - CAPPING ESTRICTO POR ETAPA PARCIAL (60%)
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -172,110 +172,44 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
 
         const resAct = await db.query(queryAsignacionesBD, [id, row.pau_id, row.codigo]);
 
-        const gruposPorActividad = {};
-
-        resAct.rows.forEach((a) => {
-          const actId = a.actividad_id;
-          if (!gruposPorActividad[actId]) {
-            gruposPorActividad[actId] = {
-              actividad_id: actId,
-              descripcion_base: a.descripcion_base,
-              precio_unitario: parseFloat(a.precio_unitario || 0),
-              completadas: [],
-              pendientes: []
-            };
-          }
-
-          const cantAsig = parseFloat(a.cant_asig_bruta || 0);
-          const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
-          const pctEtapa = parseFloat(a.pct_etapa || 100);
-
-          const cantidadValorada = cantAsig * (pctEtapa / 100.0);
-          const cantEjecFisica = Math.min(cantEjecBruta, cantidadValorada);
-          const cantPendFisica = Math.max(0, cantidadValorada - cantEjecFisica);
-
-          const itemData = {
-            asignacion_id: a.asignacion_id,
-            cantAsig,
-            cantEjecBruta,
-            cantEjecFisica,
-            cantPendFisica,
-            pctEtapa
-          };
-
-          // Si la asignación se cerró al 100% o la suma ejecutada igualó la asignación, va a completadas
-          if (cantPendFisica <= 0.001 || cantEjecBruta >= cantAsig) {
-            gruposPorActividad[actId].completadas.push(itemData);
-          } else {
-            gruposPorActividad[actId].pendientes.push(itemData);
-          }
-        });
-
         let costoTotalEjecutado = 0;
         let costoTotalPendiente = 0;
         const listaActividadesFinal = [];
 
-        Object.values(gruposPorActividad).forEach((grupo) => {
-          const precio = grupo.precio_unitario;
+        resAct.rows.forEach((a) => {
+          const cantAsig = parseFloat(a.cant_asig_bruta || 0);
+          const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
+          const pctEtapa = parseFloat(a.pct_etapa || 100);
+          const precio = parseFloat(a.precio_unitario || 0);
 
-          // 1. FILA CONSOLIDADA AL 100% COMPLETADO
-          if (grupo.completadas.length > 0) {
-            let cantAsigComp = 0;
-            let cantEjecComp = 0;
+          // Tope estricto de la etapa (ejemplo: 2.00 * 60% = 1.20 unidades ejecutables en esta etapa)
+          const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
+          
+          // La ejecución real jamás supera el límite de la etapa (Max 1.20)
+          const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
+          const cantPendFisica = Math.max(0, limiteFisicoEtapa - cantEjecFisica);
 
-            grupo.completadas.forEach((c) => {
-              const baseFisicaItem = c.pctEtapa < 100 ? (c.cantEjecFisica / (c.pctEtapa / 100.0)) : c.cantAsig;
-              cantAsigComp = Math.max(cantAsigComp, baseFisicaItem);
-              cantEjecComp = Math.max(cantEjecComp, baseFisicaItem);
-            });
+          const subEjec = cantEjecFisica * precio;
+          const subPend = (cantAsig - cantEjecFisica) * precio;
 
-            if (cantAsigComp === 0) cantAsigComp = 2.00;
-            if (cantEjecComp === 0) cantEjecComp = 2.00;
+          costoTotalEjecutado += subEjec;
+          costoTotalPendiente += subPend;
 
-            const subEjecComp = cantEjecComp * precio;
-            costoTotalEjecutado += subEjecComp;
-
-            listaActividadesFinal.push({
-              actividad_id: `${grupo.actividad_id}_completado`,
-              descripcion: grupo.descripcion_base,
-              cantidad_asignada: cantAsigComp,
-              cantidad_ejecutada: cantEjecComp,
-              cantidad_pendiente: 0,
-              precio_unitario: precio,
-              subtotal: subEjecComp,
-              subtotal_ejecutado: subEjecComp,
-              subtotal_pendiente: 0
-            });
+          let desc = a.descripcion_base;
+          if (pctEtapa < 100) {
+            desc += ` [${pctEtapa.toFixed(0)}% Etapa]`;
           }
 
-          // 2. FILAS PARA NUEVAS ASIGNACIONES PARCIALES O AL 60%
-          grupo.pendientes.forEach((p) => {
-            const cantidadValorada = p.cantAsig * (p.pctEtapa / 100.0);
-            const cantEjecFisica = Math.min(p.cantEjecBruta, cantidadValorada);
-            const cantPendFisica = Math.max(0, cantidadValorada - cantEjecFisica);
-
-            const subEjecPend = cantEjecFisica * precio;
-            const subPend = cantPendFisica * precio;
-
-            costoTotalEjecutado += subEjecPend;
-            costoTotalPendiente += subPend;
-
-            let desc = grupo.descripcion_base;
-            if (p.pctEtapa < 100) {
-              desc += ` [${p.pctEtapa.toFixed(0)}% Etapa]`;
-            }
-
-            listaActividadesFinal.push({
-              actividad_id: `${grupo.actividad_id}_pend_${p.asignacion_id}`,
-              descripcion: desc,
-              cantidad_asignada: p.cantAsig,
-              cantidad_ejecutada: cantEjecFisica,
-              cantidad_pendiente: cantPendFisica,
-              precio_unitario: precio,
-              subtotal: subEjecPend,
-              subtotal_ejecutado: subEjecPend,
-              subtotal_pendiente: subPend
-            });
+          listaActividadesFinal.push({
+            actividad_id: `${a.actividad_id}_${a.asignacion_id}`,
+            descripcion: desc,
+            cantidad_asignada: cantAsig,
+            cantidad_ejecutada: cantEjecFisica,
+            cantidad_pendiente: Math.max(0, cantAsig - cantEjecFisica),
+            precio_unitario: precio,
+            subtotal: subEjec,
+            subtotal_ejecutado: subEjec,
+            subtotal_pendiente: subPend
           });
         });
 

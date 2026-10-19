@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - CAPPING ESTRICTO POR ETAPA PARCIAL (60%)
+// GET /proyectos/:id/detalle-paus - CONSOLIDACIÓN AUTOMÁTICA DEL 100% Y SEPARACIÓN DE NUEVAS ETAPAS PENDIENTES
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -172,44 +172,105 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
 
         const resAct = await db.query(queryAsignacionesBD, [id, row.pau_id, row.codigo]);
 
+        const gruposPorActividad = {};
+
+        resAct.rows.forEach((a) => {
+          const actId = a.actividad_id;
+          if (!gruposPorActividad[actId]) {
+            gruposPorActividad[actId] = {
+              actividad_id: actId,
+              descripcion_base: a.descripcion_base,
+              precio_unitario: parseFloat(a.precio_unitario || 0),
+              asignaciones: []
+            };
+          }
+
+          const cantAsig = parseFloat(a.cant_asig_bruta || 0);
+          const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
+          const pctEtapa = parseFloat(a.pct_etapa || 100);
+
+          const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
+          const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
+          const cantPendFisica = Math.max(0, limiteFisicoEtapa - cantEjecFisica);
+
+          gruposPorActividad[actId].asignaciones.push({
+            asignacion_id: a.asignacion_id,
+            cantAsig,
+            cantEjecFisica,
+            cantPendFisica,
+            limiteFisicoEtapa,
+            pctEtapa
+          });
+        });
+
         let costoTotalEjecutado = 0;
         let costoTotalPendiente = 0;
         const listaActividadesFinal = [];
 
-        resAct.rows.forEach((a) => {
-          const cantAsig = parseFloat(a.cant_asig_bruta || 0);
-          const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
-          const pctEtapa = parseFloat(a.pct_etapa || 100);
-          const precio = parseFloat(a.precio_unitario || 0);
+        Object.values(gruposPorActividad).forEach((grupo) => {
+          const precio = grupo.precio_unitario;
+          let sumaFisicaEjecutadaTotal = 0;
+          let maxNominalAsignado = 0;
 
-          // Tope estricto de la etapa (ejemplo: 2.00 * 60% = 1.20 unidades ejecutables en esta etapa)
-          const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
-          
-          // La ejecución real jamás supera el límite de la etapa (Max 1.20)
-          const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
-          const cantPendFisica = Math.max(0, limiteFisicoEtapa - cantEjecFisica);
+          const asignacionesCompletadas = [];
+          const asignacionesPendientes = [];
 
-          const subEjec = cantEjecFisica * precio;
-          const subPend = (cantAsig - cantEjecFisica) * precio;
+          grupo.asignaciones.forEach((item) => {
+            sumaFisicaEjecutadaTotal += item.cantEjecFisica;
+            maxNominalAsignado = Math.max(maxNominalAsignado, item.cantAsig);
 
-          costoTotalEjecutado += subEjec;
-          costoTotalPendiente += subPend;
+            if (item.cantPendFisica <= 0.001) {
+              asignacionesCompletadas.push(item);
+            } else {
+              asignacionesPendientes.push(item);
+            }
+          });
 
-          let desc = a.descripcion_base;
-          if (pctEtapa < 100) {
-            desc += ` [${pctEtapa.toFixed(0)}% Etapa]`;
+          const baseFisicaReal = maxNominalAsignado > 0 ? maxNominalAsignado : 2.00;
+
+          // SI LAS ETAPAS EJECUTADAS SUMAN EL 100% (2.00 UNIDADES), SE FUSIONAN EN UNA SOLA FILA CONSOLIDADA
+          if (sumaFisicaEjecutadaTotal >= baseFisicaReal || asignacionesCompletadas.length > 0) {
+            const subEjecComp = baseFisicaReal * precio;
+            costoTotalEjecutado += subEjecComp;
+
+            listaActividadesFinal.push({
+              actividad_id: `${grupo.actividad_id}_completado`,
+              descripcion: grupo.descripcion_base,
+              cantidad_asignada: baseFisicaReal,
+              cantidad_ejecutada: baseFisicaReal,
+              cantidad_pendiente: 0,
+              precio_unitario: precio,
+              subtotal: subEjecComp,
+              subtotal_ejecutado: subEjecComp,
+              subtotal_pendiente: 0
+            });
           }
 
-          listaActividadesFinal.push({
-            actividad_id: `${a.actividad_id}_${a.asignacion_id}`,
-            descripcion: desc,
-            cantidad_asignada: cantAsig,
-            cantidad_ejecutada: cantEjecFisica,
-            cantidad_pendiente: Math.max(0, cantAsig - cantEjecFisica),
-            precio_unitario: precio,
-            subtotal: subEjec,
-            subtotal_ejecutado: subEjec,
-            subtotal_pendiente: subPend
+          // MOSTRAR ÚNICAMENTE LAS NUEVAS ASIGNACIONES EN PROCESO (COMO UN 60% PENDIENTE) EN FILAS INDEPENDIENTES
+          asignacionesPendientes.forEach((p) => {
+            const cantPendienteMostrar = p.cantPendFisica > 0 ? p.cantPendFisica : p.limiteFisicoEtapa;
+            const subEjecPend = p.cantEjecFisica * precio;
+            const subPend = cantPendienteMostrar * precio;
+
+            costoTotalEjecutado += subEjecPend;
+            costoTotalPendiente += subPend;
+
+            let desc = grupo.descripcion_base;
+            if (p.pctEtapa < 100) {
+              desc += ` [${p.pctEtapa.toFixed(0)}% Etapa]`;
+            }
+
+            listaActividadesFinal.push({
+              actividad_id: `${grupo.actividad_id}_pend_${p.asignacion_id}`,
+              descripcion: desc,
+              cantidad_asignada: p.cantAsig,
+              cantidad_ejecutada: p.cantEjecFisica,
+              cantidad_pendiente: cantPendienteMostrar,
+              precio_unitario: precio,
+              subtotal: subEjecPend,
+              subtotal_ejecutado: subEjecPend,
+              subtotal_pendiente: subPend
+            });
           });
         });
 

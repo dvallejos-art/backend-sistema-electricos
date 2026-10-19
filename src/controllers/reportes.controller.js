@@ -1,7 +1,7 @@
 // src/controllers/reportes.controller.js
 const pool = require('../config/db');
 
-// 1. OBTENER REPORTE DE ASIGNACIONES (Con filtros por Edificio, Departamento, Fechas, Técnico y Estado)
+// 1. OBTENER REPORTE DE ASIGNACIONES CON VALORES MONETARIOS ($)
 exports.obtenerReporteAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
@@ -114,18 +114,28 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_presupuestada,
         COALESCE(avances.total_ejecutado, 0) AS cantidad_ejecutada,
         GREATEST(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(avances.total_ejecutado, 0), 0) AS saldo_disponible,
+        
+        -- PRECIO UNITARIO Y SUBTOTALES CALCULADOS
+        COALESCE(pre.precio_unitario, 0) AS precio_unitario,
+        ROUND(COALESCE(avances.total_ejecutado, 0) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado,
+        ROUND(GREATEST(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(avances.total_ejecutado, 0), 0) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_pendiente,
+
         CASE 
           WHEN COALESCE(avances.total_ejecutado, 0) >= pa.cantidad_presupuestada THEN 'Realizada'
           WHEN COALESCE(avances.total_ejecutado, 0) > 0 THEN 'En Proceso'
           ELSE 'Pendiente'
         END AS estado_calculado,
         TO_CHAR(pa.creado_en, 'YYYY-MM-DD') AS fecha_asignacion
+
       FROM pau_actividades pa
       LEFT JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       LEFT JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
       LEFT JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
       LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      LEFT JOIN precios_actividades pre 
+        ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT) 
+       AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
       LEFT JOIN (
         SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado
         FROM registros_avance
@@ -143,19 +153,17 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
   }
 };
 
-// 2. EXPORTAR A EXCEL (.CSV) - FORMATO SEPARADO POR COLUMNAS AUTOMÁTICO
+// 2. EXPORTAR A EXCEL (.CSV) CON VALORES Y PRECIOS
 exports.exportarExcel = async (req, res) => {
   try {
     req.query.limite = 10000;
     const mockRes = {
       setHeader: () => {},
       json: (data) => {
-        // Indicador explícito para que Excel reconozca las columnas directamente
         let csv = "sep=;\n"; 
-        csv += "ID;Edificio;Departamento/PAU;Actividad;Tecnico Lider;Tecnico Acompanante;Presupuestado;Ejecutado;Saldo;Estado;Fecha\n";
+        csv += "ID;Edificio;Departamento/PAU;Actividad;Tecnico Lider;Tecnico Acompanante;Presupuestado;Ejecutado;Saldo;Precio Unit. ($);Subtotal Ejecutado ($);Subtotal Pendiente ($);Estado;Fecha\n";
 
         data.forEach((row) => {
-          // Limpieza de saltos de línea internos en los textos
           const actividadLimpia = String(row.actividad || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
           const edificioLimpio = String(row.edificio || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
           const dptoLimpio = String(row.departamento_pau || '').replace(/[\r\n]+/g, ' ').replace(/"/g, '""');
@@ -167,10 +175,13 @@ exports.exportarExcel = async (req, res) => {
           const cantEjec = parseFloat(row.cantidad_ejecutada || 0).toFixed(2);
           const saldo = parseFloat(row.saldo_disponible || 0).toFixed(2);
 
-          csv += `${row.asignacion_id};"${edificioLimpio}";"${dptoLimpio}";"${actividadLimpia}";"${tecLider}";"${tecAcomp}";${cantPres};${cantEjec};${saldo};"${estado}";"${row.fecha_asignacion}"\n`;
+          const precioUnit = parseFloat(row.precio_unitario || 0).toFixed(2);
+          const subEjec = parseFloat(row.subtotal_ejecutado || 0).toFixed(2);
+          const subPend = parseFloat(row.subtotal_pendiente || 0).toFixed(2);
+
+          csv += `${row.asignacion_id};"${edificioLimpio}";"${dptoLimpio}";"${actividadLimpia}";"${tecLider}";"${tecAcomp}";${cantPres};${cantEjec};${saldo};${precioUnit};${subEjec};${subPend};"${estado}";"${row.fecha_asignacion}"\n`;
         });
 
-        // Respuesta con BOM UTF-8 (\uFEFF) para apertura nativa e inmediata en Excel
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
         res.setHeader('Content-Disposition', 'attachment; filename=Reporte_Actividades.csv');
         return res.status(200).send('\uFEFF' + csv);

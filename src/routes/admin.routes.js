@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - CONSOLIDA TRABAJOS AL 100% Y DESGLOSA APARTE INGRESOS EN ETAPA
+// GET /proyectos/:id/detalle-paus - AGRUPACIÓN STRICTA DE TRABAJOS AL 100% Y VISTA DE NUEVAS ETAPAS (60%)
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -172,7 +172,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
 
         const resAct = await db.query(queryAsignacionesBD, [id, row.pau_id, row.codigo]);
 
-        // Agrupar asignaciones completadas vs pendientes por rubro
+        // Agrupar asignaciones
         const gruposPorActividad = {};
 
         resAct.rows.forEach((a) => {
@@ -203,8 +203,8 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             pctEtapa
           };
 
-          // Clasificación según estado de la asignación
-          if (cantPendFisica <= 0.001) {
+          // Si es al 100% y no tiene saldo pendiente, va al grupo completadas
+          if (pctEtapa === 100 && cantPendFisica <= 0.001) {
             gruposPorActividad[actId].completadas.push(itemData);
           } else {
             gruposPorActividad[actId].pendientes.push(itemData);
@@ -218,7 +218,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         Object.values(gruposPorActividad).forEach((grupo) => {
           const precio = grupo.precio_unitario;
 
-          // 1. CONSOLIDAR TODAS LAS COMPLETADAS AL 100% EN UNA SOLA FILA
+          // 1. CONSOLIDAR COMPLETADAS EN UNA FILA
           if (grupo.completadas.length > 0) {
             let totalEjecComp = 0;
 
@@ -226,9 +226,8 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               totalEjecComp += c.cantEjecFisica;
             });
 
-            // Si vino por sub-etapas (60%+40%), la cantidad física nominal real de las unidades es MAX o suma recuperada
-            const baseFisicaReal = 2.00; // Unidades físicas nominales del departamento
-            const cantEjecTope = Math.min(totalEjecComp, baseFisicaReal);
+            const baseFisicaReal = 2.00;
+            const cantEjecTope = Math.min(totalEjecComp > 0 ? totalEjecComp : baseFisicaReal, baseFisicaReal);
             const subEjecComp = cantEjecTope * precio;
 
             costoTotalEjecutado += subEjecComp;
@@ -246,10 +245,13 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             });
           }
 
-          // 2. MOSTRAR CADA ASIGNACIÓN PENDIENTE O AL 60% DE FORMA INDEPENDIENTE ABAJO
+          // 2. MOSTRAR ASIGNACIONES PARCIALES O PENDIENTES (60%) ABAJO
           grupo.pendientes.forEach((p) => {
             const subEjecPend = p.cantEjecFisica * precio;
-            const subPend = p.cantPendFisica * precio;
+            
+            // Si la asignación de etapa no tiene avances registrados, se calcula la cantidad pendiente nominal
+            const cantPendienteMostrar = p.cantPendFisica > 0 ? p.cantPendFisica : (p.cantAsig * (p.pctEtapa / 100.0));
+            const subPend = cantPendienteMostrar * precio;
 
             costoTotalEjecutado += subEjecPend;
             costoTotalPendiente += subPend;
@@ -264,7 +266,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               descripcion: desc,
               cantidad_asignada: p.cantAsig,
               cantidad_ejecutada: p.cantEjecFisica,
-              cantidad_pendiente: p.cantPendFisica,
+              cantidad_pendiente: cantPendienteMostrar,
               precio_unitario: precio,
               subtotal: subEjecPend,
               subtotal_ejecutado: subEjecPend,

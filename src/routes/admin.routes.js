@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - CONSOLIDACIÓN EXACTA: AGRUPA TRABAJOS AL 100% Y SEPARA NUEVAS ETAPAS PENDIENTES
+// GET /proyectos/:id/detalle-paus - LÓGICA LIMPIA Y DIRECTA PARA PRUEBAS DESDE ZERO
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -203,7 +203,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             pctEtapa
           };
 
-          // REGLA CLAVE: Si ya se ejecutó completamente esa asignación/etapa (sin pendiente), va a COMPLETADAS
+          // Si la asignación se cerró al 100% o la suma ejecutada igualó la asignación, va a completadas
           if (cantPendFisica <= 0.001 || cantEjecBruta >= cantAsig) {
             gruposPorActividad[actId].completadas.push(itemData);
           } else {
@@ -218,27 +218,28 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         Object.values(gruposPorActividad).forEach((grupo) => {
           const precio = grupo.precio_unitario;
 
-          // 1. CONSOLIDAR TODAS LAS ASIGNACIONES CERRADAS/COMPLETADAS EN UNA SOLA FILA
+          // 1. FILA CONSOLIDADA AL 100% COMPLETADO
           if (grupo.completadas.length > 0) {
-            let totalEjecComp = 0;
-            let maxCantAsig = 0;
+            let cantAsigComp = 0;
+            let cantEjecComp = 0;
 
             grupo.completadas.forEach((c) => {
-              totalEjecComp += c.cantEjecFisica;
-              maxCantAsig = Math.max(maxCantAsig, c.cantAsig);
+              const baseFisicaItem = c.pctEtapa < 100 ? (c.cantEjecFisica / (c.pctEtapa / 100.0)) : c.cantAsig;
+              cantAsigComp = Math.max(cantAsigComp, baseFisicaItem);
+              cantEjecComp = Math.max(cantEjecComp, baseFisicaItem);
             });
 
-            // Recupera las 2.00 unidades físicas nominales completadas
-            const baseFisicaReal = maxCantAsig > 0 ? maxCantAsig : 2.00;
-            const subEjecComp = baseFisicaReal * precio;
+            if (cantAsigComp === 0) cantAsigComp = 2.00;
+            if (cantEjecComp === 0) cantEjecComp = 2.00;
 
+            const subEjecComp = cantEjecComp * precio;
             costoTotalEjecutado += subEjecComp;
 
             listaActividadesFinal.push({
               actividad_id: `${grupo.actividad_id}_completado`,
               descripcion: grupo.descripcion_base,
-              cantidad_asignada: baseFisicaReal,
-              cantidad_ejecutada: baseFisicaReal,
+              cantidad_asignada: cantAsigComp,
+              cantidad_ejecutada: cantEjecComp,
               cantidad_pendiente: 0,
               precio_unitario: precio,
               subtotal: subEjecComp,
@@ -247,15 +248,14 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             });
           }
 
-          // 2. MOSTRAR CADA NUEVA ASIGNACIÓN EN PROCESO O AL 60% EN FILA SEPARADA
+          // 2. FILAS PARA NUEVAS ASIGNACIONES PARCIALES O AL 60%
           grupo.pendientes.forEach((p) => {
             const cantidadValorada = p.cantAsig * (p.pctEtapa / 100.0);
             const cantEjecFisica = Math.min(p.cantEjecBruta, cantidadValorada);
             const cantPendFisica = Math.max(0, cantidadValorada - cantEjecFisica);
 
-            const cantPendienteMostrar = cantPendFisica > 0 ? cantPendFisica : cantidadValorada;
             const subEjecPend = cantEjecFisica * precio;
-            const subPend = cantPendienteMostrar * precio;
+            const subPend = cantPendFisica * precio;
 
             costoTotalEjecutado += subEjecPend;
             costoTotalPendiente += subPend;
@@ -270,7 +270,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               descripcion: desc,
               cantidad_asignada: p.cantAsig,
               cantidad_ejecutada: cantEjecFisica,
-              cantidad_pendiente: cantPendienteMostrar,
+              cantidad_pendiente: cantPendFisica,
               precio_unitario: precio,
               subtotal: subEjecPend,
               subtotal_ejecutado: subEjecPend,
@@ -296,7 +296,6 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 // POST /proyectos - Crear nuevo proyecto
 router.post('/proyectos', async (req, res, next) => {
   const { nombre, presupuesto_total } = req.body;

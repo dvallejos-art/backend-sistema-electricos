@@ -114,7 +114,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - FUSIONA LAS COMPLETADAS AL 100% Y DEJA SEPARADAS LAS ETAPAS INCOMPLETAS CON SU PENDIENTE REAL
+// GET /proyectos/:id/detalle-paus - LÓGICA DEFINITIVA DE AGRUPACIÓN Y PONDERACIÓN POR ETAPAS
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -181,8 +181,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               actividad_id: actId,
               descripcion_base: a.descripcion_base,
               precio_unitario: parseFloat(a.precio_unitario || 0),
-              completadas: [],
-              pendientes: []
+              asignaciones: []
             };
           }
 
@@ -190,30 +189,21 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
           const pctEtapa = parseFloat(a.pct_etapa || 100);
 
-          // Tope estricto de la etapa (ejemplo: 1.00 * 60% = 0.60 física)
+          // Tope físico asignado a la etapa (ej: 2.00 al 60% = 1.20 física)
           const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
-          
-          // La ejecución física jamás supera el tope nominal de su propia etapa
           const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
           
-          // Lo que realmente le falta a la ASIGNACIÓN TOTAL (cantAsig - cantEjecFisica)
-          const cantPendienteReal = Math.max(0, cantAsig - cantEjecFisica);
+          // Lo que le falta a la etapa para completarse (limiteFisicoEtapa - cantEjecFisica)
+          const cantPendFisicaEtapa = Math.max(0, limiteFisicoEtapa - cantEjecFisica);
 
-          const itemData = {
+          gruposPorActividad[actId].asignaciones.push({
             asignacion_id: a.asignacion_id,
             cantAsig,
             cantEjecFisica,
-            cantPendienteReal,
+            cantPendFisicaEtapa,
+            limiteFisicoEtapa,
             pctEtapa
-          };
-
-          // Si el porcentaje es 100% O si ya no le falta nada a la asignación total, va a completadas
-          if (pctEtapa === 100 || cantPendienteReal <= 0.001) {
-            gruposPorActividad[actId].completadas.push(itemData);
-          } else {
-            // Si es una etapa parcial (60%) que aún tiene saldo pendiente para llegar al 100% (1.00), va a pendientes
-            gruposPorActividad[actId].pendientes.push(itemData);
-          }
+          });
         });
 
         let costoTotalEjecutado = 0;
@@ -223,22 +213,37 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         Object.values(gruposPorActividad).forEach((grupo) => {
           const precio = grupo.precio_unitario;
 
-          // 1. CONSOLIDAR TODAS LAS COMPLETADAS EN UNA SOLA FILA
-          if (grupo.completadas.length > 0) {
-            let totalEjecComp = 0;
-            grupo.completadas.forEach((c) => {
-              totalEjecComp += c.cantEjecFisica;
+          const asignacionesCerradas = [];
+          const asignacionesEnProceso = [];
+
+          grupo.asignaciones.forEach((item) => {
+            // Si la asignación/etapa ya se ejecutó al 100% de su propia etapa
+            if (item.cantPendFisicaEtapa <= 0.001) {
+              asignacionesCerradas.push(item);
+            } else {
+              asignacionesEnProceso.push(item);
+            }
+          });
+
+          // 1. CONSOLIDAR EN 1 SOLA FILA TODAS LAS ETAPAS/ASIGNACIONES COMPLETADAS
+          if (asignacionesCerradas.length > 0) {
+            let totalFisicoComp = 0;
+            let maxAsigBase = 0;
+
+            asignacionesCerradas.forEach((c) => {
+              totalFisicoComp += c.cantEjecFisica;
+              maxAsigBase = Math.max(maxAsigBase, c.cantAsig);
             });
 
-            const cantConsolidada = totalEjecComp > 0 ? totalEjecComp : 2.00;
-            const subEjecComp = cantConsolidada * precio;
+            const cantMostrarConsolidada = maxAsigBase > 0 ? maxAsigBase : totalFisicoComp;
+            const subEjecComp = totalFisicoComp * precio;
             costoTotalEjecutado += subEjecComp;
 
             listaActividadesFinal.push({
               actividad_id: `${grupo.actividad_id}_completado`,
               descripcion: grupo.descripcion_base,
-              cantidad_asignada: cantConsolidada,
-              cantidad_ejecutada: cantConsolidada,
+              cantidad_asignada: cantMostrarConsolidada,
+              cantidad_ejecutada: totalFisicoComp,
               cantidad_pendiente: 0,
               precio_unitario: precio,
               subtotal: subEjecComp,
@@ -247,10 +252,13 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             });
           }
 
-          // 2. MOSTRAR LA NUEVA ASIGNACIÓN DEL 60% EN SU PROPIA FILA CON SU PENDIENTE REAL
-          grupo.pendientes.forEach((p) => {
+          // 2. MOSTRAR CADA NUEVA ASIGNACIÓN EN PROCESO (COMO LA DEL 60% PENDIENTE) EN FILAS SEPARADAS
+          asignacionesEnProceso.forEach((p) => {
             const subEjecPend = p.cantEjecFisica * precio;
-            const subPend = p.cantPendienteReal * precio;
+            
+            // Cantidad pendiente equivalente de la asignación total (cantAsig - cantEjecFisica)
+            const cantPendienteMostrar = Math.max(0, p.cantAsig - p.cantEjecFisica);
+            const subPend = (cantPendienteMostrar * (p.pctEtapa / 100.0)) * precio;
 
             costoTotalEjecutado += subEjecPend;
             costoTotalPendiente += subPend;
@@ -265,7 +273,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
               descripcion: desc,
               cantidad_asignada: p.cantAsig,
               cantidad_ejecutada: p.cantEjecFisica,
-              cantidad_pendiente: p.cantPendienteReal,
+              cantidad_pendiente: cantPendienteMostrar * (p.pctEtapa / 100.0),
               precio_unitario: precio,
               subtotal: subEjecPend,
               subtotal_ejecutado: subEjecPend,
@@ -291,6 +299,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // POST /proyectos - Crear nuevo proyecto
 router.post('/proyectos', async (req, res, next) => {
   const { nombre, presupuesto_total } = req.body;

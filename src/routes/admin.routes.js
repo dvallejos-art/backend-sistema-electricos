@@ -61,7 +61,7 @@ router.get('/proyectos', async (req, res, next) => {
         p.nombre, 
         CAST(COALESCE(p.presupuesto_total, 0) AS NUMERIC) AS presupuesto_total,
         
-        -- Suma total ejecutada en dinero ($) usando ÚNICAMENTE el precio de este proyecto
+        -- Suma total ejecutada en dinero ($) usando ÚNICAMENTE asignaciones activas
         COALESCE(
           (
             SELECT SUM(
@@ -78,9 +78,10 @@ router.get('/proyectos', async (req, res, next) => {
               )
             )
             FROM registros_avance ra
+            JOIN pau_actividades pa_act ON CAST(pa_act.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
             JOIN paus pau ON (
-              CAST(pau.id AS TEXT) = CAST(ra.pau_id AS TEXT) 
-              OR CAST(pau.codigo AS TEXT) = CAST(ra.pau_id AS TEXT)
+              CAST(pau.id AS TEXT) = CAST(pa_act.pau_id AS TEXT) 
+              OR CAST(pau.codigo AS TEXT) = CAST(pa_act.pau_id AS TEXT)
             )
             WHERE CAST(pau.proyecto_id AS TEXT) = CAST(p.id AS TEXT)
           ), 0
@@ -114,7 +115,7 @@ router.get('/proyectos', async (req, res, next) => {
   }
 });
 
-// GET /proyectos/:id/detalle-paus - CÁLCULO PONDERADO Y CONSOLIDADO SEGÚN PORCENTAJES DE ETAPA
+// GET /proyectos/:id/detalle-paus - BASADO EXCLUSIVAMENTE EN ASIGNACIONES ACTIVAS
 router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
   const { id } = req.params;
   try {
@@ -134,9 +135,11 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
       resultPaus.rows.map(async (row) => {
         const queryActividadesBD = `
           WITH base_actividades AS (
-            SELECT actividad_id FROM pau_actividades WHERE CAST(pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pau_id AS TEXT) = CAST($3 AS TEXT)
-            UNION
-            SELECT actividad_id FROM registros_avance WHERE CAST(pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pau_id AS TEXT) = CAST($3 AS TEXT)
+            -- ÚNICAMENTE TOMA LAS ACTIVIDADES CON ASIGNACIÓN ACTIVA EN EL DEPARTAMENTO
+            SELECT DISTINCT actividad_id 
+            FROM pau_actividades 
+            WHERE CAST(pau_id AS TEXT) = CAST($2 AS TEXT) 
+               OR CAST(pau_id AS TEXT) = CAST($3 AS TEXT)
           ),
           actividades_calculadas AS (
             SELECT 
@@ -151,7 +154,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 CONCAT('Rubro / Actividad #', b.actividad_id)
               ) AS descripcion,
 
-              -- Suma de la cantidad fisica asignada (2.00 + 1.00 = 3.00)
+              -- Suma de la cantidad física asignada activa
               COALESCE(
                 (
                   SELECT SUM(CAST(pa.cantidad_presupuestada AS NUMERIC)) 
@@ -161,7 +164,7 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 ), 0
               ) AS cantidad_asignada_nominal,
 
-              -- Cantidad valorada ponderada considerando el % de etapa de cada asignación individual
+              -- Cantidad valorada ponderada según % de etapa de las asignaciones activas
               COALESCE(
                 (
                   SELECT SUM(
@@ -182,13 +185,14 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
                 ), 0
               ) AS cantidad_valorada,
 
-              -- Cantidad ejecutada real registrada por los técnicos
+              -- Cantidad ejecutada vinculada a las asignaciones activas
               COALESCE(
                 (
                   SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC)) 
                   FROM registros_avance ra 
-                  WHERE CAST(ra.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
-                    AND (CAST(ra.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(ra.pau_id AS TEXT) = CAST($3 AS TEXT))
+                  JOIN pau_actividades pa_link ON CAST(pa_link.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
+                  WHERE CAST(pa_link.actividad_id AS TEXT) = CAST(b.actividad_id AS TEXT)
+                    AND (CAST(pa_link.pau_id AS TEXT) = CAST($2 AS TEXT) OR CAST(pa_link.pau_id AS TEXT) = CAST($3 AS TEXT))
                 ), 0
               ) AS cantidad_ejecutada,
 

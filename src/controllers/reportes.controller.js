@@ -29,7 +29,7 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
       paramIndex++;
     }
 
-    // Filtro por Departamento / PAU (por selector de ID o por búsqueda de texto "201")
+    // Filtro por Departamento / PAU
     if (pau_id && pau_id !== 'todos') {
       whereConditions.push(`CAST(pa.pau_id AS TEXT) = $${paramIndex}`);
       queryParams.push(String(pau_id));
@@ -43,7 +43,7 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
       paramIndex++;
     }
 
-    // Filtro por Técnico (Si no se selecciona uno, incluye a todos automáticamente)
+    // Filtro por Técnico
     if (tecnico_id && tecnico_id !== 'todos') {
       whereConditions.push(`(
         CAST(pa.tecnico_id AS TEXT) = $${paramIndex} 
@@ -60,7 +60,7 @@ exports.obtenerReporteAsignaciones = async (req, res) => {
       paramIndex++;
     }
 
-    // Filtros por Rango de Fechas (Asignación o Ejecución)
+    // Filtros por Rango de Fechas
     if (fecha_inicio) {
       if (tipo_fecha === 'ejecucion') {
         whereConditions.push(`(
@@ -239,7 +239,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES PONDERADOS POR PORCENTAJE DE ETAPA (CORREGIDO)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES PONDERADOS POR PORCENTAJE DE ETAPA (CONSOLIDADO CORRECTO)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -249,13 +249,19 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         pa.actividad_id,
         ac.descripcion AS descripcion_rubro,
         
-        -- Tarifa especifica del proyecto (si no hay tarifa para este edificio devuelve 0)
+        -- Obtiene la tarifa específica del proyecto
         COALESCE(pre.precio_unitario, 0) AS precio_unitario,
         
-        -- Cantidad fisica asignada
-        SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS cant_asignada_fisica,
+        -- Si hay asignaciones fragmentadas por etapa ([Etapa: X%]), toma el MAX base para no duplicar (ej: 2.00)
+        -- Si son asignaciones de diferentes etapas completas, suma nominalmente
+        CASE 
+          WHEN COUNT(pa.id) > 1 AND SUM(CASE WHEN pa.observaciones LIKE '%[Etapa: %' THEN 1 ELSE 0 END) > 0 THEN
+            MAX(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
+          ELSE
+            SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC))
+        END AS cant_asignada_fisica,
         
-        -- Cantidad valorada segun la etapa ingresada
+        -- Suma ponderada equivalente según porcentajes asignados (60% + 40% = 100% de 2.00 = 2.00)
         SUM(
           CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) * 
           (
@@ -269,29 +275,28 @@ exports.getDetalleRubrosPAU = async (req, res) => {
           )
         ) AS cantidad_presupuestada_valorada,
         
-        -- Cantidad ejecutada real
-        COALESCE(avances.total_ejecutado, 0) AS cantidad_ejecutada,
+        -- Suma real de avances ejecutados por los técnicos
+        COALESCE(SUM(DISTINCT avances.total_ejecutado_pa), 0) AS cantidad_ejecutada,
         
         -- Subtotal financiero ejecutado
-        ROUND(COALESCE(avances.total_ejecutado, 0) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
+        ROUND(COALESCE(SUM(DISTINCT avances.total_ejecutado_pa), 0) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
 
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
       
-      -- LEFT JOIN estricto por actividad_id Y por proyecto_id del PAU
       LEFT JOIN precios_actividades pre 
         ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
        AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
        
       LEFT JOIN (
-        SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado
+        SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado_pa
         FROM registros_avance
         GROUP BY pau_actividad_id
       ) avances ON CAST(avances.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
       
-      WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
-      GROUP BY pa.actividad_id, ac.descripcion, pre.precio_unitario, avances.total_ejecutado
+      WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
+      GROUP BY pa.actividad_id, ac.descripcion, pre.precio_unitario
       ORDER BY ac.descripcion ASC;
     `;
 
@@ -305,19 +310,19 @@ exports.getDetalleRubrosPAU = async (req, res) => {
       const subtotalEjecutado = parseFloat(row.subtotal_ejecutado || 0);
       const subtotalTotal = valorada * precio;
       
-      // Si el precio es 0, el subtotal pendiente es estrictamente 0.00
+      const pendienteFisica = Math.max(0, valorada - ejecutada);
       const subtotalPendiente = precio === 0 ? 0 : Math.max(0, subtotalTotal - subtotalEjecutado);
       
       const pctAvance = valorada > 0 ? Math.min(100, (ejecutada / valorada) * 100) : 100;
       const pctPendiente = (100 - pctAvance).toFixed(0);
 
-      const estaCompletado = subtotalPendiente === 0 || ejecutada >= valorada;
+      const estaCompletado = subtotalPendiente === 0 && pendienteFisica === 0;
 
       return {
         descripcion_rubro: row.descripcion_rubro,
         cantidad_asignada: parseFloat(row.cant_asignada_fisica).toFixed(2),
         cantidad_ejecutada: ejecutada.toFixed(2),
-        cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${(valorada - ejecutada).toFixed(2)} (${pctPendiente}% Pendiente)`,
+        cantidad_pendiente: estaCompletado ? "0.00 (Completado)" : `${pendienteFisica.toFixed(2)} (${pctPendiente}% Pendiente)`,
         precio_unitario: precio.toFixed(2),
         subtotal_ejecutado: subtotalEjecutado.toFixed(2),
         subtotal_pendiente: subtotalPendiente.toFixed(2),

@@ -239,7 +239,7 @@ exports.getHistorialPorTecnico = async (req, res, next) => {
   }
 };
 
-// 5. OBTENER DETALLE DE RUBROS Y AVANCES PONDERADOS POR PORCENTAJE DE ETAPA (NUEVO)
+// 5. OBTENER DETALLE DE RUBROS Y AVANCES PONDERADOS POR PORCENTAJE DE ETAPA (FILTRADO STRICTO POR EDIFICIO)
 exports.getDetalleRubrosPAU = async (req, res) => {
   const { pau_id } = req.params;
 
@@ -248,7 +248,9 @@ exports.getDetalleRubrosPAU = async (req, res) => {
       SELECT 
         pa.actividad_id,
         ac.descripcion AS descripcion_rubro,
-        COALESCE(ac.precio_unitario, 0) AS precio_unitario,
+        
+        -- Obtiene la tarifa ESPECÍFICA del proyecto del PAU. Si no existe, devuelve 0.00 (no el precio de otros edificios)
+        COALESCE(pre.precio_unitario, 0) AS precio_unitario,
         
         -- Suma nominal de unidades físicas asignadas
         SUM(CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC)) AS cant_asignada_fisica,
@@ -271,17 +273,25 @@ exports.getDetalleRubrosPAU = async (req, res) => {
         COALESCE(avances.total_ejecutado, 0) AS cantidad_ejecutada,
         
         -- Subtotal financiero ejecutado
-        ROUND(COALESCE(avances.total_ejecutado, 0) * COALESCE(ac.precio_unitario, 0), 2) AS subtotal_ejecutado
+        ROUND(COALESCE(avances.total_ejecutado, 0) * COALESCE(pre.precio_unitario, 0), 2) AS subtotal_ejecutado
 
       FROM pau_actividades pa
+      JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      
+      -- JOIN estricto por actividad_id Y por el proyecto_id del PAU
+      LEFT JOIN precios_actividades pre 
+        ON CAST(pre.actividad_id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+       AND CAST(pre.proyecto_id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+       
       LEFT JOIN (
         SELECT pau_actividad_id, SUM(CAST(cantidad_ejecutada AS NUMERIC)) AS total_ejecutado
         FROM registros_avance
         GROUP BY pau_actividad_id
       ) avances ON CAST(avances.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+      
       WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
-      GROUP BY pa.actividad_id, ac.descripcion, ac.precio_unitario, avances.total_ejecutado
+      GROUP BY pa.actividad_id, ac.descripcion, pre.precio_unitario, avances.total_ejecutado
       ORDER BY ac.descripcion ASC;
     `;
 

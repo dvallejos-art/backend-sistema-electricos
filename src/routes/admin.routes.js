@@ -53,7 +53,7 @@ registrarRuta('delete', '/precios/:precioId', adminController.eliminarPrecioActi
 registrarRuta('get', '/edificios', adminController.obtenerEdificios || adminController.getEdificios || adminController.getProyectos);
 
 // GET /proyectos - Consulta proyectos calculando Avance Monetario Real ($)
-router.get('/proyectos', async (req, res, next) => {
+const obtenerProyectosResiliente = async (req, res, next) => {
   try {
     const queryResiliente = `
       SELECT 
@@ -112,10 +112,12 @@ router.get('/proyectos', async (req, res, next) => {
     console.error('Error en GET /proyectos:', err);
     next(err);
   }
-});
+};
 
-// GET /proyectos/:id/detalle-paus - UNIFICA ETAPAS COMPLEMENTARIAS (60%+40%=100%) Y DEJA SUELTA LA ETAPA EN PROCESO
-router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
+router.get('/proyectos', obtenerProyectosResiliente);
+
+// GET /proyectos/:id/detalle-paus - UNIFICA ETAPAS COMPLEMENTARIAS
+const obtenerDetallePausHandler = async (req, res, next) => {
   const { id } = req.params;
   try {
     const queryPaus = `
@@ -190,7 +192,6 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           const cantEjecBruta = parseFloat(a.cant_ejec_bruta || 0);
           const pctEtapa = parseFloat(a.pct_etapa || 100);
 
-          // Tope físico ejecutable en esta etapa (ej: 2.00 * 60% = 1.20)
           const limiteFisicoEtapa = cantAsig * (pctEtapa / 100.0);
           const cantEjecFisica = Math.min(cantEjecBruta, limiteFisicoEtapa);
 
@@ -213,7 +214,6 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
           let cantFisicaConsolidada = 0;
           const asignacionesEnProceso = [];
 
-          // Algoritmo de Consolidación por Unidades Completadas (60% + 40% = 1.00)
           let acumuladorParcial = 0;
           let loteTemporal = [];
 
@@ -221,7 +221,6 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             acumuladorParcial += item.cantEjecFisica;
             loteTemporal.push(item);
 
-            // Si el acumulado parcial llega exactamente a un número entero de unidades o cubre el 100% nominal
             if (Math.abs(acumuladorParcial - Math.round(acumuladorParcial)) < 0.001 && acumuladorParcial > 0) {
               cantFisicaConsolidada += acumuladorParcial;
               acumuladorParcial = 0;
@@ -229,12 +228,10 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             }
           });
 
-          // Las asignaciones que no cerraron ciclo del 100% quedan sueltas abajo
           if (loteTemporal.length > 0) {
             loteTemporal.forEach((resto) => asignacionesEnProceso.push(resto));
           }
 
-          // 1. FILA CONSOLIDADA DE UNIDADES 100% COMPLETADAS (FUSIONA 2.00 + 1.00 = 3.00)
           if (cantFisicaConsolidada > 0) {
             const subEjecComp = cantFisicaConsolidada * precio;
             costoTotalEjecutado += subEjecComp;
@@ -252,10 +249,8 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
             });
           }
 
-          // 2. FILAS SEPARADAS PARA LAS ASIGNACIONES NUEVAS EN PROCESO (EJ: 2.00 AL 60%)
           asignacionesEnProceso.forEach((p) => {
             const subEjecPend = p.cantEjecFisica * precio;
-            const cantPendienteMostrar = Math.max(0, p.cantAsig - p.cantEjecFisica);
             const subPend = (p.cantAsig * ((100 - p.pctEtapa) / 100.0)) * precio;
 
             costoTotalEjecutado += subEjecPend;
@@ -283,8 +278,10 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
         return {
           pau_id: row.pau_id,
           departamento: row.departamento,
+          dpto: row.departamento,
           codigo: row.codigo,
           costo_total: costoTotalEjecutado,
+          costo_acumulado: costoTotalEjecutado,
           costo_total_pendiente: costoTotalPendiente,
           actividades: listaActividadesFinal
         };
@@ -296,7 +293,9 @@ router.get('/proyectos/:id/detalle-paus', async (req, res, next) => {
     console.error('Error al obtener detalle de PAUs por edificio:', err);
     res.status(500).json({ error: err.message });
   }
-});
+};
+
+router.get('/proyectos/:id/detalle-paus', obtenerDetallePausHandler);
 
 // POST /proyectos - Crear nuevo proyecto
 router.post('/proyectos', async (req, res, next) => {
@@ -337,5 +336,12 @@ router.delete('/proyectos/:id', async (req, res, next) => {
     next(err);
   }
 });
+
+// ==========================================
+// ALIAS DE LECTURA PARA EL PORTAL CLIENTE
+// ==========================================
+router.get('/resumen-edificios', obtenerProyectosResiliente);
+router.get('/resumen-departamentos/:id', obtenerDetallePausHandler);
+router.get('/edificios/:id/departamentos', obtenerDetallePausHandler);
 
 module.exports = router;

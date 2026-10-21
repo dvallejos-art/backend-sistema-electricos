@@ -1,3 +1,4 @@
+//src/controllers/auth.controller.js
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
@@ -60,14 +61,19 @@ exports.login = async (req, res) => {
     // 4. Normalizar rol a minúsculas
     const rolNormalizado = usuario.rol ? String(usuario.rol).trim().toLowerCase() : 'tecnico';
 
-    // 5. Generar Token JWT
+    // 5. Generar Token JWT (INCLUYENDO edificio_id)
     const token = jwt.sign(
-      { id: usuario.id, rol: rolNormalizado, email: usuario.email },
+      { 
+        id: usuario.id, 
+        rol: rolNormalizado, 
+        email: usuario.email,
+        edificio_id: usuario.edificio_id // 👈 INCLUIDO EN TOKEN
+      },
       JWT_SECRET,
       { expiresIn: '8h' }
     );
 
-    // 6. Devolver respuesta
+    // 6. Devolver respuesta con edificio_id
     res.json({
       mensaje: 'Autenticación exitosa',
       token,
@@ -75,7 +81,9 @@ exports.login = async (req, res) => {
         id: usuario.id,
         nombre: usuario.nombre,
         email: usuario.email,
-        rol: rolNormalizado
+        correo: usuario.email,
+        rol: rolNormalizado,
+        edificio_id: usuario.edificio_id // 👈 AQUÍ SE RETORNA AL FRONTEND
       }
     });
 

@@ -6,7 +6,7 @@ const bcrypt = require('bcryptjs');
 exports.obtenerUsuarios = async (req, res, next) => {
   try {
     const result = await pool.query(
-      `SELECT id, nombre, email, email AS correo, rol, creado_en 
+      `SELECT id, nombre, email, email AS correo, rol, edificio_id, creado_en 
        FROM usuarios 
        ORDER BY id DESC`
     );
@@ -18,7 +18,7 @@ exports.obtenerUsuarios = async (req, res, next) => {
 };
 
 exports.crearUsuario = async (req, res, next) => {
-  const { nombre, correo, email, password, rol } = req.body;
+  const { nombre, correo, email, password, rol, edificio_id } = req.body;
   const emailFinal = (correo || email || '').trim().toLowerCase();
 
   if (!nombre || !emailFinal || !password) {
@@ -28,12 +28,16 @@ exports.crearUsuario = async (req, res, next) => {
   try {
     const salt = await bcrypt.genSalt(10);
     const passwordHash = await bcrypt.hash(password, salt);
+    const rolClean = (rol || 'supervisor').trim().toLowerCase();
+    
+    // Solo asignar edificio si el rol es 'cliente' o 'invitado'
+    const edificioAsignado = (rolClean === 'cliente' || rolClean === 'invitado') ? (edificio_id || null) : null;
 
     const result = await pool.query(
-      `INSERT INTO usuarios (nombre, email, password, rol) 
-       VALUES ($1, $2, $3, $4) 
-       RETURNING id, nombre, email, email AS correo, rol`,
-      [nombre.trim(), emailFinal, passwordHash, (rol || 'supervisor').trim().toLowerCase()]
+      `INSERT INTO usuarios (nombre, email, password, rol, edificio_id) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING id, nombre, email, email AS correo, rol, edificio_id`,
+      [nombre.trim(), emailFinal, passwordHash, rolClean, edificioAsignado]
     );
 
     res.status(201).json(result.rows[0]);
@@ -48,7 +52,7 @@ exports.crearUsuario = async (req, res, next) => {
 
 exports.actualizarUsuario = async (req, res, next) => {
   const { id } = req.params;
-  const { nombre, correo, email, rol, password } = req.body;
+  const { nombre, correo, email, rol, password, edificio_id } = req.body;
   const emailFinal = (correo || email || '').trim().toLowerCase();
 
   if (!nombre || !emailFinal || !rol) {
@@ -58,6 +62,9 @@ exports.actualizarUsuario = async (req, res, next) => {
   try {
     const rolClean = rol.trim().toLowerCase();
     const nombreClean = nombre.trim();
+    
+    // Solo asignar edificio si el rol es 'cliente' o 'invitado'
+    const edificioAsignado = (rolClean === 'cliente' || rolClean === 'invitado') ? (edificio_id || null) : null;
 
     if (password && password.trim() !== '') {
       const salt = await bcrypt.genSalt(10);
@@ -65,18 +72,18 @@ exports.actualizarUsuario = async (req, res, next) => {
 
       const result = await pool.query(
         `UPDATE usuarios 
-         SET nombre = $1, email = $2, rol = $3, password = $4
-         WHERE id = $5 RETURNING id, nombre, email, email AS correo, rol`,
-        [nombreClean, emailFinal, rolClean, passwordHash, id]
+         SET nombre = $1, email = $2, rol = $3, edificio_id = $4, password = $5
+         WHERE id = $6 RETURNING id, nombre, email, email AS correo, rol, edificio_id`,
+        [nombreClean, emailFinal, rolClean, edificioAsignado, passwordHash, id]
       );
 
       return res.json({ mensaje: 'Usuario actualizado con éxito', usuario: result.rows[0] });
     } else {
       const result = await pool.query(
         `UPDATE usuarios 
-         SET nombre = $1, email = $2, rol = $3
-         WHERE id = $4 RETURNING id, nombre, email, email AS correo, rol`,
-        [nombreClean, emailFinal, rolClean, id]
+         SET nombre = $1, email = $2, rol = $3, edificio_id = $4
+         WHERE id = $5 RETURNING id, nombre, email, email AS correo, rol, edificio_id`,
+        [nombreClean, emailFinal, rolClean, edificioAsignado, id]
       );
 
       if (result.rowCount === 0) {
@@ -341,14 +348,12 @@ exports.obtenerResumenDepartamentos = async (req, res) => {
           pa.actividad_id,
           CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cant_asig,
           
-          -- Extrae el % asignado (ej: 60, 40 o 100 por defecto)
           CASE 
             WHEN pa.observaciones ~ '[0-9]+%' THEN 
               CAST(SUBSTRING(pa.observaciones FROM '([0-9]+)%') AS NUMERIC)
             ELSE 100.0
           END AS pct_etapa,
 
-          -- Cantidad ejecutada real en la base de datos para esta asignación
           COALESCE(
             (
               SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -357,7 +362,6 @@ exports.obtenerResumenDepartamentos = async (req, res) => {
             ), 0
           ) AS cant_ejec_bruta,
 
-          -- Tarifa/Precio unitario para el proyecto actual
           COALESCE(pre.precio_unitario, 0) AS precio_unitario
 
         FROM paus p
@@ -378,7 +382,6 @@ exports.obtenerResumenDepartamentos = async (req, res) => {
           (cant_asig * (pct_etapa / 100.0)) AS limite_fisico_etapa,
           LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))) AS cantidad_ejecutada_fisica,
           
-          -- Calcula el pendiente NOMINAL REAL (solo es 0 si la ejecución alcanza el 100% nominal de la asignación)
           CASE 
             WHEN LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))) >= cant_asig OR pct_etapa = 100 THEN
               GREATEST(0, cant_asig - LEAST(cant_ejec_bruta, (cant_asig * (pct_etapa / 100.0))))

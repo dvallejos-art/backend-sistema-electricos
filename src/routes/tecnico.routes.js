@@ -132,8 +132,8 @@ const obtenerActividadesHandler = async (req, res) => {
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       WHERE (
         CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
-        OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
-        OR CAST(p.nombre AS TEXT) = CAST($1 AS TEXT)
+        OR LOWER(p.codigo) = LOWER($1)
+        OR LOWER(p.nombre) = LOWER($1)
       )
       AND (
         $2::TEXT IS NULL 
@@ -149,7 +149,7 @@ const obtenerActividadesHandler = async (req, res) => {
       ORDER BY pa.id DESC;
     `;
 
-    const result = await pool.query(query, [pau_id, tecnicoId]);
+    const result = await pool.query(query, [pau_id, tecnicoId ? String(tecnicoId) : null]);
 
     const actividadesPreparadas = result.rows.map((row) => ({
       ...row,

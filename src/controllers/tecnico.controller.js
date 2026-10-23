@@ -2,7 +2,7 @@
 const pool = require('../config/db');
 
 /**
- * 1. Obtener Proyectos asignados al Técnico (como Lider o Cuadrilla)
+ * 1. Obtener Proyectos asignados al Técnico (como Líder o Integrante de Cuadrilla)
  */
 exports.obtenerProyectosTecnico = async (req, res) => {
   const tecnicoId = req.user ? req.user.id : (req.usuario ? req.usuario.id : (req.query.tecnico_id || req.params.id));
@@ -13,8 +13,10 @@ exports.obtenerProyectosTecnico = async (req, res) => {
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+      LEFT JOIN pau_actividades_cuadrilla pac ON CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
       WHERE CAST(pa.tecnico_id AS TEXT) = CAST($1 AS TEXT)
          OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($1 AS TEXT)
+         OR CAST(pac.tecnico_id AS TEXT) = CAST($1 AS TEXT)
       ORDER BY pr.nombre ASC;
     `;
     const result = await pool.query(query, [tecnicoId]);
@@ -37,10 +39,12 @@ exports.obtenerPausProyectoTecnico = async (req, res) => {
       SELECT DISTINCT p.id, p.codigo, COALESCE(p.nombre, p.codigo) AS nombre
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      LEFT JOIN pau_actividades_cuadrilla pac ON CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
       WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
         AND (
           CAST(pa.tecnico_id AS TEXT) = CAST($2 AS TEXT)
           OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($2 AS TEXT)
+          OR CAST(pac.tecnico_id AS TEXT) = CAST($2 AS TEXT)
         )
       ORDER BY p.codigo ASC;
     `;
@@ -65,7 +69,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
 
   try {
     const query = `
-      SELECT 
+      SELECT DISTINCT
         pa.id,
         pa.id AS pau_actividad_id,
         pa.pau_id,
@@ -107,6 +111,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
       JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
       LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      LEFT JOIN pau_actividades_cuadrilla pac ON CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
       WHERE (
         CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
         OR LOWER(p.codigo) = LOWER($1)
@@ -117,6 +122,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         OR $2::TEXT = '' 
         OR CAST(pa.tecnico_id AS TEXT) = CAST($2 AS TEXT)
         OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($2 AS TEXT)
+        OR CAST(pac.tecnico_id AS TEXT) = CAST($2 AS TEXT)
       )
       ORDER BY ac.descripcion ASC;
     `;
@@ -181,8 +187,10 @@ exports.registrarAvanceDiario = async (req, res) => {
 
     const asignacion = checkResult.rows[0];
 
-    // Bloqueo en el backend: Si el usuario es el acompañante, se le deniega el registro
-    if (asignacion.tecnico_secundario_id && String(asignacion.tecnico_secundario_id).trim() === String(tecnicoId).trim()) {
+    // Verificar si el técnico que intenta guardar es acompañante directo o parte de la cuadrilla
+    const esLider = String(asignacion.tecnico_id).trim() === String(tecnicoId).trim();
+
+    if (!esLider) {
       return res.status(403).json({ error: 'Acción denegada: Solo el Técnico Líder de la cuadrilla puede registrar avances.' });
     }
 

@@ -130,7 +130,7 @@ exports.obtenerActividadesPorEdificio = async (req, res) => {
 };
 
 /**
- * 7. Obtener todas las asignaciones con cálculo de Avance Real acumulado
+ * 7. Obtener todas las asignaciones con CONCATENACIÓN DE TODOS LOS ACOMPAÑANTES
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -146,8 +146,23 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.tecnico_id,
         pa.tecnico_secundario_id,
         COALESCE(u1.nombre, 'Sin Asignar') AS tecnico,
+        COALESCE(u1.nombre, 'Sin Asignar') AS tecnico_principal,
         u2.nombre AS tecnico_secundario_nombre,
+        
+        -- CONCATENAR TODOS LOS ACOMPAÑANTES REGISTRADOS
+        COALESCE(
+          (
+            SELECT STRING_AGG(u_acomp.nombre, ', ')
+            FROM pau_actividades_cuadrilla pac
+            JOIN usuarios u_acomp ON CAST(u_acomp.id AS TEXT) = CAST(pac.tecnico_id AS TEXT)
+            WHERE CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          ),
+          u2.nombre,
+          'Individual'
+        ) AS acompanantes_nombres,
+
         COALESCE(pr.nombre, 'Sin Proyecto') AS proyecto,
+        COALESCE(pr.nombre, 'Sin Proyecto') AS edificio,
         COALESCE(p.nombre, p.codigo, 'N/A') AS departamento,
         COALESCE(p.nombre, p.codigo, 'N/A') AS pau,
         COALESCE(ac.descripcion, 'Sin Actividad') AS actividad,
@@ -163,7 +178,16 @@ exports.obtenerAsignaciones = async (req, res) => {
           ), 0
         ) AS cantidad_ejecutada,
 
+        COALESCE(
+          (
+            SELECT MAX(ra.fecha_registro)
+            FROM registros_avance ra
+            WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          ), NULL
+        ) AS fecha_ejecucion,
+
         pa.observaciones,
+        pa.fecha_inicio AS fecha_asignacion,
         pa.fecha_inicio,
         pa.fecha_fin
       FROM pau_actividades pa
@@ -184,11 +208,12 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 8. Crear nueva asignación (Conserva la cantidad física real ingresada)
+ * 8. Crear nueva asignación (Soporta múltiples acompañantes en cuadrilla)
  */
 exports.asignarTrabajo = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
+  const listaAcompanantes = Array.isArray(req.body.acompanantes) ? req.body.acompanantes : [];
 
   const {
     actividad_id,
@@ -198,23 +223,24 @@ exports.asignarTrabajo = async (req, res) => {
     porcentaje,
     observaciones,
     fecha_inicio,
-    fecha_fin
+    fecha_fin,
+    fecha_asignacion
   } = req.body;
 
   if (!tecnico_id || !actividad_id || !pau_id || !cantidad) {
     return res.status(400).json({ error: 'Faltan datos obligatorios para la asignación.' });
   }
 
+  const client = await pool.connect();
+
   try {
+    await client.query('BEGIN');
+
     let secId = null;
-    if (
-      rawSecundario !== null && 
-      rawSecundario !== undefined && 
-      String(rawSecundario).trim() !== '' && 
-      String(rawSecundario) !== 'null'
-    ) {
+    if (listaAcompanantes.length > 0) {
+      secId = parseInt(listaAcompanantes[0], 10);
+    } else if (rawSecundario && String(rawSecundario) !== 'null') {
       secId = parseInt(rawSecundario, 10);
-      if (isNaN(secId)) secId = null;
     }
 
     const pctReal = parseFloat(porcentaje_pago || porcentaje || 100);
@@ -222,6 +248,8 @@ exports.asignarTrabajo = async (req, res) => {
     if (pctReal < 100 && !obsFinales.includes('[Etapa:')) {
       obsFinales = `[Etapa: ${pctReal}%] ${obsFinales}`.trim();
     }
+
+    const fechaAsigFinal = fecha_asignacion || fecha_inicio || new Date().toISOString().split('T')[0];
 
     const query = `
       INSERT INTO pau_actividades (
@@ -242,18 +270,50 @@ exports.asignarTrabajo = async (req, res) => {
       parseInt(pau_id, 10),
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
-      secId,
+      isNaN(secId) ? null : secId,
       parseFloat(cantidad),
       obsFinales,
-      fecha_inicio || null,
+      fechaAsigFinal,
       fecha_fin || null
     ];
 
-    const result = await pool.query(query, values);
+    const result = await client.query(query, values);
+    const asignacionId = result.rows[0].id;
+
+    // Crear la tabla auxiliar de la cuadrilla si no existe e insertar todos los acompañantes
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
+        id SERIAL PRIMARY KEY,
+        pau_actividad_id INT,
+        tecnico_id INT
+      );
+    `);
+
+    if (listaAcompanantes.length > 0) {
+      for (const acompId of listaAcompanantes) {
+        const idNum = parseInt(acompId, 10);
+        if (!isNaN(idNum)) {
+          await client.query(
+            `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+            [asignacionId, idNum]
+          );
+        }
+      }
+    } else if (secId && !isNaN(secId)) {
+      await client.query(
+        `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+        [asignacionId, secId]
+      );
+    }
+
+    await client.query('COMMIT');
     res.json({ mensaje: 'Nueva asignación guardada con éxito.', asignacion: result.rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al asignar trabajo:', err);
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 };
 
@@ -266,6 +326,7 @@ exports.editarAsignacion = async (req, res) => {
   const { id } = req.params;
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
+  const listaAcompanantes = Array.isArray(req.body.acompanantes) ? req.body.acompanantes : [];
 
   const {
     actividad_id,
@@ -275,19 +336,20 @@ exports.editarAsignacion = async (req, res) => {
     porcentaje,
     observaciones,
     fecha_inicio,
-    fecha_fin
+    fecha_fin,
+    fecha_asignacion
   } = req.body;
 
+  const client = await pool.connect();
+
   try {
+    await client.query('BEGIN');
+
     let secId = null;
-    if (
-      rawSecundario !== null && 
-      rawSecundario !== undefined && 
-      String(rawSecundario).trim() !== '' && 
-      String(rawSecundario) !== 'null'
-    ) {
+    if (listaAcompanantes.length > 0) {
+      secId = parseInt(listaAcompanantes[0], 10);
+    } else if (rawSecundario && String(rawSecundario) !== 'null') {
       secId = parseInt(rawSecundario, 10);
-      if (isNaN(secId)) secId = null;
     }
 
     const pctReal = parseFloat(porcentaje_pago || porcentaje || 100);
@@ -295,6 +357,8 @@ exports.editarAsignacion = async (req, res) => {
     if (pctReal < 100 && !obsFinales.includes('[Etapa:')) {
       obsFinales = `[Etapa: ${pctReal}%] ${obsFinales}`.trim();
     }
+
+    const fechaAsigFinal = fecha_asignacion || fecha_inicio || new Date().toISOString().split('T')[0];
 
     const query = `
       UPDATE pau_actividades
@@ -313,26 +377,54 @@ exports.editarAsignacion = async (req, res) => {
 
     const values = [
       parseInt(tecnico_id, 10),
-      secId,
+      isNaN(secId) ? null : secId,
       parseInt(actividad_id, 10),
       parseInt(pau_id, 10),
       parseFloat(cantidad),
       obsFinales,
-      fecha_inicio || null,
+      fechaAsigFinal,
       fecha_fin || null,
       parseInt(id, 10)
     ];
 
-    const result = await pool.query(query, values);
+    const result = await client.query(query, values);
+
+    // Actualizar integrantes de cuadrilla
+    await client.query(
+      `DELETE FROM pau_actividades_cuadrilla WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
+      [id]
+    );
+
+    if (listaAcompanantes.length > 0) {
+      for (const acompId of listaAcompanantes) {
+        const idNum = parseInt(acompId, 10);
+        if (!isNaN(idNum)) {
+          await client.query(
+            `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+            [parseInt(id, 10), idNum]
+          );
+        }
+      }
+    } else if (secId && !isNaN(secId)) {
+      await client.query(
+        `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+        [parseInt(id, 10), secId]
+      );
+    }
+
+    await client.query('COMMIT');
     res.json({ mensaje: 'Asignación actualizada correctamente.', asignacion: result.rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al actualizar asignación:', err);
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 };
 
 /**
- * 10. Eliminar asignación por ID (CON ELIMINACIÓN EN CASCADA DE AVANCES REGISTRADOS)
+ * 10. Eliminar asignación por ID (CON ELIMINACIÓN EN CASCADA DE AVANCES Y CUADRILLA)
  */
 exports.eliminarAsignacion = async (req, res) => {
   const { id } = req.params;
@@ -341,14 +433,21 @@ exports.eliminarAsignacion = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 1. Eliminar los registros de avance de técnicos asociados a la asignación
+    // 1. Eliminar integrantes de la cuadrilla asociados
+    await client.query(
+      `DELETE FROM pau_actividades_cuadrilla 
+       WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
+      [id]
+    );
+
+    // 2. Eliminar los registros de avance de técnicos asociados a la asignación
     await client.query(
       `DELETE FROM registros_avance 
        WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
       [id]
     );
 
-    // 2. Eliminar la asignación principal
+    // 3. Eliminar la asignación principal
     const result = await client.query(
       `DELETE FROM pau_actividades 
        WHERE CAST(id AS TEXT) = CAST($1 AS TEXT);`,

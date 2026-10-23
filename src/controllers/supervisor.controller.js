@@ -138,6 +138,15 @@ exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Expires', '0');
 
   try {
+    // Garantiza que la tabla de cuadrillas exista antes de realizar la consulta
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
+        id SERIAL PRIMARY KEY,
+        pau_actividad_id INT,
+        tecnico_id INT
+      );
+    `);
+
     const query = `
       SELECT 
         pa.id,
@@ -149,7 +158,7 @@ exports.obtenerAsignaciones = async (req, res) => {
         COALESCE(u1.nombre, 'Sin Asignar') AS tecnico_principal,
         u2.nombre AS tecnico_secundario_nombre,
         
-        -- CONCATENAR TODOS LOS ACOMPAÑANTES REGISTRADOS
+        -- Concatenación de acompañantes desde la tabla auxiliar de cuadrillas
         COALESCE(
           (
             SELECT STRING_AGG(u_acomp.nombre, ', ')
@@ -169,7 +178,7 @@ exports.obtenerAsignaciones = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         
-        -- Cálculo dinámico de avances registrados para esta asignación
+        -- Cálculo de avances registrados
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -206,7 +215,6 @@ exports.obtenerAsignaciones = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 /**
  * 8. Crear nueva asignación (Soporta múltiples acompañantes en cuadrilla)
  */

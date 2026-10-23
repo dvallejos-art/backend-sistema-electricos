@@ -138,7 +138,6 @@ exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Expires', '0');
 
   try {
-    // Garantiza que la tabla de cuadrillas exista antes de realizar la consulta
     await pool.query(`
       CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
         id SERIAL PRIMARY KEY,
@@ -158,10 +157,10 @@ exports.obtenerAsignaciones = async (req, res) => {
         COALESCE(u1.nombre, 'Sin Asignar') AS tecnico_principal,
         u2.nombre AS tecnico_secundario_nombre,
         
-        -- Concatenación de acompañantes desde la tabla auxiliar de cuadrillas
+        -- Concatenación unificada de acompañantes (prioriza la tabla de cuadrillas)
         COALESCE(
           (
-            SELECT STRING_AGG(u_acomp.nombre, ', ')
+            SELECT STRING_AGG(DISTINCT u_acomp.nombre, ', ')
             FROM pau_actividades_cuadrilla pac
             JOIN usuarios u_acomp ON CAST(u_acomp.id AS TEXT) = CAST(pac.tecnico_id AS TEXT)
             WHERE CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
@@ -215,6 +214,7 @@ exports.obtenerAsignaciones = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 /**
  * 8. Crear nueva asignación
  */
@@ -253,7 +253,6 @@ exports.asignarTrabajo = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Determinar el primer acompañante para la columna secundaria legacy
     let secId = null;
     if (listaAcompanantes.length > 0) {
       const parsedFirst = parseInt(listaAcompanantes[0], 10);
@@ -297,7 +296,6 @@ exports.asignarTrabajo = async (req, res) => {
     const result = await client.query(query, values);
     const asignacionId = result.rows[0].id;
 
-    // Crear la tabla si no existe
     await client.query(`
       CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
         id SERIAL PRIMARY KEY,
@@ -306,10 +304,12 @@ exports.asignarTrabajo = async (req, res) => {
       );
     `);
 
-    // Insertar a TODOS los integrantes recibidos en la lista
+    // Guardar a TODOS los integrantes recibidos en pau_actividades_cuadrilla
+    const procesados = new Set();
     for (const acompId of listaAcompanantes) {
       const idNum = parseInt(acompId, 10);
-      if (!isNaN(idNum)) {
+      if (!isNaN(idNum) && !procesados.has(idNum)) {
+        procesados.add(idNum);
         await client.query(
           `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
           [asignacionId, idNum]
@@ -405,15 +405,17 @@ exports.editarAsignacion = async (req, res) => {
 
     const result = await client.query(query, values);
 
-    // Limpiar cuadrilla previa y re-insertar todos los acompañantes
+    // Limpiar cuadrilla previa y re-insertar de forma limpia
     await client.query(
       `DELETE FROM pau_actividades_cuadrilla WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
       [id]
     );
 
+    const procesados = new Set();
     for (const acompId of listaAcompanantes) {
       const idNum = parseInt(acompId, 10);
-      if (!isNaN(idNum)) {
+      if (!isNaN(idNum) && !procesados.has(idNum)) {
+        procesados.add(idNum);
         await client.query(
           `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
           [parseInt(id, 10), idNum]
@@ -442,21 +444,18 @@ exports.eliminarAsignacion = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 1. Eliminar integrantes de la cuadrilla asociados
     await client.query(
       `DELETE FROM pau_actividades_cuadrilla 
        WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
       [id]
     );
 
-    // 2. Eliminar los registros de avance de técnicos asociados a la asignación
     await client.query(
       `DELETE FROM registros_avance 
        WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
       [id]
     );
 
-    // 3. Eliminar la asignación principal
     const result = await client.query(
       `DELETE FROM pau_actividades 
        WHERE CAST(id AS TEXT) = CAST($1 AS TEXT);`,

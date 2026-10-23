@@ -18,7 +18,7 @@ const verificarAuth = (req, res, next) => {
   }
 };
 
-// 1. Obtener Proyectos asignados al Técnico (como Líder o Acompañante)
+// 1. Obtener Proyectos asignados al Técnico (como Líder, Secundario o en Cuadrilla)
 const obtenerProyectosHandler = async (req, res) => {
   const tecnicoId = req.params.id || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
 
@@ -28,8 +28,10 @@ const obtenerProyectosHandler = async (req, res) => {
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+      LEFT JOIN pau_actividades_cuadrilla pac ON CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
       WHERE CAST(pa.tecnico_id AS TEXT) = CAST($1 AS TEXT)
          OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($1 AS TEXT)
+         OR CAST(pac.tecnico_id AS TEXT) = CAST($1 AS TEXT)
       ORDER BY pr.nombre ASC;
     `;
     const result = await pool.query(query, [tecnicoId]);
@@ -43,7 +45,7 @@ const obtenerProyectosHandler = async (req, res) => {
 router.get('/proyectos', verificarAuth, obtenerProyectosHandler);
 router.get('/:id/proyectos', verificarAuth, obtenerProyectosHandler);
 
-// 2. Obtener Departamentos/PAUs del Proyecto asignados al Técnico
+// 2. Obtener Departamentos/PAUs del Proyecto asignados al Técnico (Líder o Cuadrilla)
 const obtenerPausHandler = async (req, res) => {
   const { idProyecto } = req.params;
   const tecnicoId = req.params.id || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
@@ -53,10 +55,12 @@ const obtenerPausHandler = async (req, res) => {
       SELECT DISTINCT p.id, p.codigo, COALESCE(p.nombre, p.codigo) AS nombre
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      LEFT JOIN pau_actividades_cuadrilla pac ON CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
       WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
         AND (
           CAST(pa.tecnico_id AS TEXT) = CAST($2 AS TEXT)
           OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($2 AS TEXT)
+          OR CAST(pac.tecnico_id AS TEXT) = CAST($2 AS TEXT)
         )
       ORDER BY p.codigo ASC;
     `;
@@ -78,7 +82,7 @@ const obtenerActividadesHandler = async (req, res) => {
 
   try {
     const query = `
-      SELECT 
+      SELECT DISTINCT
         pa.id,
         pa.id AS pau_actividad_id,
         pa.pau_id,
@@ -120,6 +124,7 @@ const obtenerActividadesHandler = async (req, res) => {
       JOIN actividades_catalogo ac ON CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
       LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      LEFT JOIN pau_actividades_cuadrilla pac ON CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
       WHERE (
         CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
         OR CAST(p.codigo AS TEXT) = CAST($1 AS TEXT)
@@ -130,6 +135,7 @@ const obtenerActividadesHandler = async (req, res) => {
         OR $2::TEXT = '' 
         OR CAST(pa.tecnico_id AS TEXT) = CAST($2 AS TEXT)
         OR CAST(pa.tecnico_secundario_id AS TEXT) = CAST($2 AS TEXT)
+        OR CAST(pac.tecnico_id AS TEXT) = CAST($2 AS TEXT)
       )
       ORDER BY pa.id DESC;
     `;
@@ -208,8 +214,9 @@ router.post('/registrar-avance', verificarAuth, async (req, res) => {
 
     const asignacion = checkResult.rows[0];
 
-    // BLOQUEO EN BACKEND: Si es el acompañante, se rechaza la petición
-    if (asignacion.tecnico_secundario_id && String(asignacion.tecnico_secundario_id).trim() === String(tecnicoId).trim()) {
+    // BLOQUEO EN BACKEND: Solo el Técnico Líder (tecnico_id) puede ingresar el avance
+    const esLider = String(asignacion.tecnico_id).trim() === String(tecnicoId).trim();
+    if (!esLider) {
       return res.status(403).json({ error: 'Acción denegada: Solo el Técnico Líder de la cuadrilla puede registrar avances.' });
     }
 

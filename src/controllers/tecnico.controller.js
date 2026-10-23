@@ -2,7 +2,7 @@
 const pool = require('../config/db');
 
 /**
- * 1. Obtener Proyectos asignados al Técnico (como Líder o Integrante de Cuadrilla)
+ * 1. Obtener Proyectos asignados al Técnico (como Líder o en Cuadrilla)
  */
 exports.obtenerProyectosTecnico = async (req, res) => {
   const tecnicoId = req.user ? req.user.id : (req.usuario ? req.usuario.id : (req.query.tecnico_id || req.params.id));
@@ -144,7 +144,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
 };
 
 /**
- * 4. Registrar Avance Diario (Bloqueo estricto para Acompañante)
+ * 4. Registrar Avance Diario (Bloqueo estricto para Acompañantes)
  */
 exports.registrarAvanceDiario = async (req, res) => {
   const { pau_id, actividad_id, pau_actividad_id, cantidad, cantidad_ejecutada, observaciones } = req.body;
@@ -164,7 +164,6 @@ exports.registrarAvanceDiario = async (req, res) => {
         pa.pau_id AS real_pau_id,
         pa.actividad_id AS actividad_catalogo_id,
         pa.tecnico_id,
-        pa.tecnico_secundario_id,
         ROUND(
           CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(
             (
@@ -187,7 +186,7 @@ exports.registrarAvanceDiario = async (req, res) => {
 
     const asignacion = checkResult.rows[0];
 
-    // Verificar si el técnico que intenta guardar es acompañante directo o parte de la cuadrilla
+    // Solo el líder principal (tecnico_id) puede escribir avances
     const esLider = String(asignacion.tecnico_id).trim() === String(tecnicoId).trim();
 
     if (!esLider) {

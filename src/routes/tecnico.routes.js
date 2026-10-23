@@ -81,7 +81,7 @@ const obtenerPausHandler = async (req, res) => {
 router.get('/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 router.get('/:id/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 
-// 3. Obtener Actividades Asignadas (Garantizado para TODOS los miembros de la cuadrilla)
+// 3. Obtener Actividades Asignadas (Soporte completo para Líder y TODOS los acompañantes)
 const obtenerActividadesHandler = async (req, res) => {
   const pau_id = req.params.pau_id || req.params.idPau;
   const tecnicoId = req.params.tecnicoId || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
@@ -133,8 +133,8 @@ const obtenerActividadesHandler = async (req, res) => {
       
       WHERE (
         CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
-        OR LOWER(p.codigo) = LOWER($1)
-        OR LOWER(p.nombre) = LOWER($1)
+        OR LOWER(TRIM(p.codigo)) = LOWER(TRIM($1))
+        OR LOWER(TRIM(p.nombre)) = LOWER(TRIM($1))
       )
       AND (
         $2::TEXT IS NULL 
@@ -150,7 +150,7 @@ const obtenerActividadesHandler = async (req, res) => {
       ORDER BY pa.id DESC;
     `;
 
-    const result = await pool.query(query, [pau_id, tecnicoId ? String(tecnicoId) : null]);
+    const result = await pool.query(query, [pau_id ? String(pau_id) : '', tecnicoId ? String(tecnicoId) : '']);
 
     const actividadesPreparadas = result.rows.map((row) => ({
       ...row,

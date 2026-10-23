@@ -63,7 +63,7 @@ exports.obtenerPausProyectoTecnico = async (req, res) => {
 };
 
 /**
- * 3. Obtener actividades asignadas con Saldo Disponible Real y datos de cuadrilla
+ * 3. Obtener actividades asignadas con Saldo Disponible Real
  */
 exports.obtenerActividadesPauTecnico = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -92,7 +92,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
 
-        -- Suma de avances acumulados
+        -- Suma de avances
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -119,8 +119,8 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       WHERE (
         CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
-        OR LOWER(p.codigo) = LOWER($1)
-        OR LOWER(p.nombre) = LOWER($1)
+        OR LOWER(TRIM(p.codigo)) = LOWER(TRIM($1))
+        OR LOWER(TRIM(p.nombre)) = LOWER(TRIM($1))
       )
       AND (
         $2::TEXT IS NULL 
@@ -136,7 +136,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
       ORDER BY ac.descripcion ASC;
     `;
 
-    const result = await pool.query(query, [pau_id_param, tecnico_id ? String(tecnico_id) : null]);
+    const result = await pool.query(query, [pau_id_param ? String(pau_id_param) : '', tecnico_id ? String(tecnico_id) : '']);
 
     const mapeados = result.rows.map(row => ({
       ...row,
@@ -151,7 +151,6 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 /**
  * 4. Registrar Avance Diario (Bloqueo estricto para Acompañantes)
  */

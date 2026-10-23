@@ -337,14 +337,47 @@ router.delete('/proyectos/:id', async (req, res, next) => {
   }
 });
 
+// --- GESTIÓN DE DEPARTAMENTOS / PAUs ---
+// GET /edificios/:id/paus - Obtener lista de departamentos
+router.get('/edificios/:id/paus', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const result = await db.query(
+      'SELECT id, codigo, COALESCE(nombre, codigo) AS nombre FROM paus WHERE CAST(proyecto_id AS TEXT) = CAST($1 AS TEXT) ORDER BY codigo ASC',
+      [id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al listar PAUs:', err);
+    res.status(500).json({ error: 'Error al consultar departamentos' });
+  }
+});
+
+// PUT /paus/:id - Editar/Renombrar departamento
+router.put('/paus/:id', async (req, res) => {
+  const { id } = req.params;
+  const { codigo } = req.body;
+  try {
+    if (!codigo || !codigo.trim()) {
+      return res.status(400).json({ error: 'El número de departamento es obligatorio' });
+    }
+    await db.query(
+      'UPDATE paus SET codigo = $1, nombre = $1 WHERE id = $2',
+      [codigo.trim(), id]
+    );
+    res.json({ mensaje: 'Departamento actualizado correctamente' });
+  } catch (err) {
+    console.error('Error al actualizar PAU:', err);
+    res.status(500).json({ error: 'Error al actualizar el número de departamento' });
+  }
+});
+
 // ==========================================
 // ALIAS DE LECTURA PARA EL PORTAL CLIENTE
 // ==========================================
 router.get('/resumen-edificios', obtenerProyectosResiliente);
 router.get('/resumen-departamentos/:id', obtenerDetallePausHandler);
 router.get('/edificios/:id/departamentos', obtenerDetallePausHandler);
-
-module.exports = router;
 
 // GET /matriz-pisos/:id - Genera la estructura matricial agrupada por pisos/niveles
 router.get('/matriz-pisos/:id', async (req, res, next) => {
@@ -452,3 +485,5 @@ router.get('/matriz-pisos/:id', async (req, res, next) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+module.exports = router;

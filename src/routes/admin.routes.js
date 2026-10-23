@@ -345,3 +345,110 @@ router.get('/resumen-departamentos/:id', obtenerDetallePausHandler);
 router.get('/edificios/:id/departamentos', obtenerDetallePausHandler);
 
 module.exports = router;
+
+// GET /matriz-pisos/:id - Genera la estructura matricial agrupada por pisos/niveles
+router.get('/matriz-pisos/:id', async (req, res, next) => {
+  const { id } = req.params;
+  try {
+    // 1. Obtener todos los PAUs del proyecto con sus avances calculados
+    const query = `
+      WITH datos_pau AS (
+        SELECT 
+          p.id AS pau_id,
+          p.codigo,
+          COALESCE(p.nombre, p.codigo) AS departamento,
+          
+          -- Cálculo de avance acumulado en dinero
+          COALESCE(
+            (
+              SELECT SUM(
+                CAST(ra.cantidad_ejecutada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0)
+              )
+              FROM registros_avance ra
+              JOIN pau_actividades pa_act ON CAST(pa_act.id AS TEXT) = CAST(ra.pau_actividad_id AS TEXT)
+              LEFT JOIN precios_actividades pa_precio 
+                ON CAST(pa_precio.actividad_id AS TEXT) = CAST(pa_act.actividad_id AS TEXT)
+               AND CAST(pa_precio.proyecto_id AS TEXT) = CAST($1 AS TEXT)
+              WHERE CAST(pa_act.pau_id AS TEXT) = CAST(p.id AS TEXT)
+            ), 0
+          ) AS ejec_dinero,
+
+          -- Cálculo de presupuesto base del departamento
+          COALESCE(
+            (
+              SELECT SUM(
+                CAST(pa_act.cantidad_presupuestada AS NUMERIC) * COALESCE(pa_precio.precio_unitario, 0)
+              )
+              FROM pau_actividades pa_act
+              LEFT JOIN precios_actividades pa_precio 
+                ON CAST(pa_precio.actividad_id AS TEXT) = CAST(pa_act.actividad_id AS TEXT)
+               AND CAST(pa_precio.proyecto_id AS TEXT) = CAST($1 AS TEXT)
+              WHERE CAST(pa_act.pau_id AS TEXT) = CAST(p.id AS TEXT)
+            ), 0
+          ) AS pres_dinero
+
+        FROM paus p
+        WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
+      )
+      SELECT 
+        pau_id,
+        codigo,
+        departamento,
+        ejec_dinero,
+        pres_dinero,
+        CASE 
+          WHEN pres_dinero > 0 THEN ROUND((ejec_dinero / pres_dinero) * 100, 1)
+          ELSE 0.0
+        END AS porcentaje_avance
+      FROM datos_pau
+      ORDER BY codigo ASC;
+    `;
+
+    const result = await db.query(query, [id]);
+
+    // 2. Agrupación por Pisos/Niveles
+    const nivelesMap = {};
+
+    result.rows.forEach((item) => {
+      const dpto = String(item.departamento || item.codigo).trim();
+      let pisoEtiqueta = 'Otros';
+
+      // Detectar Subsuelos (ej: S01, S02, S1, SUB1)
+      if (/^S/i.test(dpto)) {
+        const num = dpto.match(/\d+/);
+        pisoEtiqueta = num ? `Subsuelo S${num[0]}` : 'Subsuelos';
+      } 
+      // Detectar Planta Baja (PB)
+      else if (/^PB/i.test(dpto)) {
+        pisoEtiqueta = 'Planta Baja (PB)';
+      } 
+      // Detectar por dígitos numéricos (ej: 101 -> Piso 1, 202 -> Piso 2, 1001 -> Piso 10)
+      else if (/^\d+$/.test(dpto)) {
+        if (dpto.length === 3) {
+          pisoEtiqueta = `Piso ${dpto.substring(0, 1)}`;
+        } else if (dpto.length >= 4) {
+          pisoEtiqueta = `Piso ${dpto.substring(0, dpto.length - 2)}`;
+        } else {
+          pisoEtiqueta = 'Piso 1';
+        }
+      }
+
+      if (!nivelesMap[pisoEtiqueta]) {
+        nivelesMap[pisoEtiqueta] = [];
+      }
+
+      nivelesMap[pisoEtiqueta].push({
+        pau_id: item.pau_id,
+        departamento: dpto,
+        porcentaje_avance: parseFloat(item.porcentaje_avance || 0),
+        ejecutado: parseFloat(item.ejec_dinero || 0),
+        presupuesto: parseFloat(item.pres_dinero || 0)
+      });
+    });
+
+    res.json(nivelesMap);
+  } catch (err) {
+    console.error('Error en GET /matriz-pisos:', err);
+    res.status(500).json({ error: err.message });
+  }
+});

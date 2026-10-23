@@ -216,12 +216,21 @@ exports.obtenerAsignaciones = async (req, res) => {
   }
 };
 /**
- * 8. Crear nueva asignación (Soporta múltiples acompañantes en cuadrilla)
+ * 8. Crear nueva asignación
  */
 exports.asignarTrabajo = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
-  const listaAcompanantes = Array.isArray(req.body.acompanantes) ? req.body.acompanantes : [];
+  
+  // Extraer acompañantes garantizando formato array
+  let listaAcompanantes = [];
+  if (Array.isArray(req.body.acompanantes)) {
+    listaAcompanantes = req.body.acompanantes;
+  } else if (Array.isArray(req.body.tecnicos_cuadrilla)) {
+    listaAcompanantes = req.body.tecnicos_cuadrilla;
+  } else if (rawSecundario) {
+    listaAcompanantes = [rawSecundario];
+  }
 
   const {
     actividad_id,
@@ -244,11 +253,11 @@ exports.asignarTrabajo = async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // Determinar el primer acompañante para la columna secundaria legacy
     let secId = null;
     if (listaAcompanantes.length > 0) {
-      secId = parseInt(listaAcompanantes[0], 10);
-    } else if (rawSecundario && String(rawSecundario) !== 'null') {
-      secId = parseInt(rawSecundario, 10);
+      const parsedFirst = parseInt(listaAcompanantes[0], 10);
+      if (!isNaN(parsedFirst)) secId = parsedFirst;
     }
 
     const pctReal = parseFloat(porcentaje_pago || porcentaje || 100);
@@ -278,7 +287,7 @@ exports.asignarTrabajo = async (req, res) => {
       parseInt(pau_id, 10),
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
-      isNaN(secId) ? null : secId,
+      secId,
       parseFloat(cantidad),
       obsFinales,
       fechaAsigFinal,
@@ -288,7 +297,7 @@ exports.asignarTrabajo = async (req, res) => {
     const result = await client.query(query, values);
     const asignacionId = result.rows[0].id;
 
-    // Crear la tabla auxiliar de la cuadrilla si no existe e insertar todos los acompañantes
+    // Crear la tabla si no existe
     await client.query(`
       CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
         id SERIAL PRIMARY KEY,
@@ -297,21 +306,15 @@ exports.asignarTrabajo = async (req, res) => {
       );
     `);
 
-    if (listaAcompanantes.length > 0) {
-      for (const acompId of listaAcompanantes) {
-        const idNum = parseInt(acompId, 10);
-        if (!isNaN(idNum)) {
-          await client.query(
-            `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
-            [asignacionId, idNum]
-          );
-        }
+    // Insertar a TODOS los integrantes recibidos en la lista
+    for (const acompId of listaAcompanantes) {
+      const idNum = parseInt(acompId, 10);
+      if (!isNaN(idNum)) {
+        await client.query(
+          `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+          [asignacionId, idNum]
+        );
       }
-    } else if (secId && !isNaN(secId)) {
-      await client.query(
-        `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
-        [asignacionId, secId]
-      );
     }
 
     await client.query('COMMIT');
@@ -325,16 +328,22 @@ exports.asignarTrabajo = async (req, res) => {
   }
 };
 
-exports.registrarAvance = exports.asignarTrabajo;
-
 /**
- * 9. Editar asignación
+ * 9. Editar asignación existente
  */
 exports.editarAsignacion = async (req, res) => {
   const { id } = req.params;
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
-  const listaAcompanantes = Array.isArray(req.body.acompanantes) ? req.body.acompanantes : [];
+  
+  let listaAcompanantes = [];
+  if (Array.isArray(req.body.acompanantes)) {
+    listaAcompanantes = req.body.acompanantes;
+  } else if (Array.isArray(req.body.tecnicos_cuadrilla)) {
+    listaAcompanantes = req.body.tecnicos_cuadrilla;
+  } else if (rawSecundario) {
+    listaAcompanantes = [rawSecundario];
+  }
 
   const {
     actividad_id,
@@ -355,9 +364,8 @@ exports.editarAsignacion = async (req, res) => {
 
     let secId = null;
     if (listaAcompanantes.length > 0) {
-      secId = parseInt(listaAcompanantes[0], 10);
-    } else if (rawSecundario && String(rawSecundario) !== 'null') {
-      secId = parseInt(rawSecundario, 10);
+      const parsedFirst = parseInt(listaAcompanantes[0], 10);
+      if (!isNaN(parsedFirst)) secId = parsedFirst;
     }
 
     const pctReal = parseFloat(porcentaje_pago || porcentaje || 100);
@@ -385,7 +393,7 @@ exports.editarAsignacion = async (req, res) => {
 
     const values = [
       parseInt(tecnico_id, 10),
-      isNaN(secId) ? null : secId,
+      secId,
       parseInt(actividad_id, 10),
       parseInt(pau_id, 10),
       parseFloat(cantidad),
@@ -397,27 +405,20 @@ exports.editarAsignacion = async (req, res) => {
 
     const result = await client.query(query, values);
 
-    // Actualizar integrantes de cuadrilla
+    // Limpiar cuadrilla previa y re-insertar todos los acompañantes
     await client.query(
       `DELETE FROM pau_actividades_cuadrilla WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
       [id]
     );
 
-    if (listaAcompanantes.length > 0) {
-      for (const acompId of listaAcompanantes) {
-        const idNum = parseInt(acompId, 10);
-        if (!isNaN(idNum)) {
-          await client.query(
-            `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
-            [parseInt(id, 10), idNum]
-          );
-        }
+    for (const acompId of listaAcompanantes) {
+      const idNum = parseInt(acompId, 10);
+      if (!isNaN(idNum)) {
+        await client.query(
+          `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+          [parseInt(id, 10), idNum]
+        );
       }
-    } else if (secId && !isNaN(secId)) {
-      await client.query(
-        `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
-        [parseInt(id, 10), secId]
-      );
     }
 
     await client.query('COMMIT');

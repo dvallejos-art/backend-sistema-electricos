@@ -81,7 +81,7 @@ const obtenerPausHandler = async (req, res) => {
 router.get('/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 router.get('/:id/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 
-// 3. Obtener Actividades Asignadas (Garantizado para TODOS los acompañantes)
+// 3. Obtener Actividades Asignadas (Garantizado para TODOS los miembros de la cuadrilla)
 const obtenerActividadesHandler = async (req, res) => {
   const pau_id = req.params.pau_id || req.params.idPau;
   const tecnicoId = req.params.tecnicoId || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
@@ -130,6 +130,7 @@ const obtenerActividadesHandler = async (req, res) => {
       JOIN actividades_catalogo ac ON CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
       LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      
       WHERE (
         CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT)
         OR LOWER(p.codigo) = LOWER($1)

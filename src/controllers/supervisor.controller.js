@@ -595,3 +595,140 @@ exports.asignarTrabajoMasivo = async (req, res) => {
     client.release();
   }
 };
+/**
+ * 12. Obtener el presupuesto de un departamento y el saldo disponible por asignar
+ */
+exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
+  const { pauId } = req.params;
+  try {
+    const query = `
+      SELECT 
+        ac.id AS actividad_id,
+        ac.descripcion AS actividad_nombre,
+        ac.unidad_medida,
+        COALESCE(pd.cantidad_presupuestada, 0) AS cantidad_presupuestada,
+        
+        -- Suma de lo que el supervisor ya asignó a los técnicos
+        COALESCE((
+          SELECT SUM(pa.cantidad_presupuestada) 
+          FROM pau_actividades pa 
+          WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
+            AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
+        ), 0) AS cantidad_ya_asignada,
+
+        -- Saldo pendiente por liberar / asignar
+        COALESCE(pd.cantidad_presupuestada, 0) - COALESCE((
+          SELECT SUM(pa.cantidad_presupuestada) 
+          FROM pau_actividades pa 
+          WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
+            AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
+        ), 0) AS saldo_por_asignar,
+
+        -- Suma del trabajo ejecutado real por los técnicos
+        COALESCE((
+          SELECT SUM(ra.cantidad_ejecutada) 
+          FROM pau_actividades pa 
+          JOIN registros_avance ra ON CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
+            AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
+        ), 0) AS cantidad_ejecutada_real
+
+      FROM presupuesto_departamento pd
+      JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pd.actividad_id AS TEXT)
+      WHERE CAST(pd.pau_id AS TEXT) = CAST($1 AS TEXT)
+      ORDER BY ac.descripcion ASC;
+    `;
+    const result = await pool.query(query, [pauId]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener saldos del departamento:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * 13. Guardar / Cargar Presupuesto de Actividades por Departamento
+ */
+exports.guardarPresupuestoDpto = async (req, res) => {
+  const { pau_id, presupuesto } = req.body; // presupuesto: [{ actividad_id, cantidad_presupuestada }]
+  if (!pau_id || !Array.isArray(presupuesto)) {
+    return res.status(400).json({ error: 'Faltan datos de presupuesto.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const item of presupuesto) {
+      const query = `
+        INSERT INTO presupuesto_departamento (pau_id, actividad_id, cantidad_presupuestada)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (pau_id, actividad_id) 
+        DO UPDATE SET cantidad_presupuestada = EXCLUDED.cantidad_presupuestada;
+      `;
+      await client.query(query, [pau_id, item.actividad_id, item.cantidad_presupuestada]);
+    }
+    await client.query('COMMIT');
+    res.json({ mensaje: 'Presupuesto del departamento actualizado con éxito.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al guardar presupuesto:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * 14. Calcular el Porcentaje de Avance Real para la Matriz por Pisos
+ */
+exports.obtenerAvanceMatrizPisos = async (req, res) => {
+  const { proyectoId } = req.params;
+  try {
+    const query = `
+      SELECT 
+        p.id AS pau_id,
+        p.codigo AS pau_codigo,
+        p.nombre AS pau_nombre,
+        COALESCE(p.piso, 'Piso 1') AS piso,
+        
+        -- Total Presupuestado del Dpto
+        COALESCE((
+          SELECT SUM(pd.cantidad_presupuestada)
+          FROM presupuesto_departamento pd
+          WHERE CAST(pd.pau_id AS TEXT) = CAST(p.id AS TEXT)
+        ), 0) AS total_presupuestado,
+
+        -- Total Ejecutado Real por los Técnicos
+        COALESCE((
+          SELECT SUM(ra.cantidad_ejecutada)
+          FROM pau_actividades pa
+          JOIN registros_avance ra ON CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          WHERE CAST(pa.pau_id AS TEXT) = CAST(p.id AS TEXT)
+        ), 0) AS total_ejecutado
+
+      FROM paus p
+      WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
+      ORDER BY p.piso ASC, p.codigo ASC;
+    `;
+    const result = await pool.query(query, [proyectoId]);
+
+    // Procesar porcentaje real
+    const datosProcesados = result.rows.map(row => {
+      const pres = parseFloat(row.total_presupuestado);
+      const ejec = parseFloat(row.total_ejecutado);
+      let porcentaje = 0;
+      if (pres > 0) {
+        porcentaje = Math.min(Math.round((ejec / pres) * 100), 100);
+      }
+      return {
+        ...row,
+        porcentaje_avance: porcentaje
+      };
+    });
+
+    res.json(datosProcesados);
+  } catch (err) {
+    console.error('Error al calcular avance de matriz:', err);
+    res.status(500).json({ error: err.message });
+  }
+};

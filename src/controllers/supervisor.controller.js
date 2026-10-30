@@ -130,7 +130,7 @@ exports.obtenerActividadesPorEdificio = async (req, res) => {
 };
 
 /**
- * 7. Obtener todas las asignaciones (muestra el Nombre Real del Supervisor que asignó)
+ * 7. Obtener todas las asignaciones
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -155,7 +155,6 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.tecnico_secundario_id,
         pa.creado_por,
         
-        -- Nombre del Supervisor Asignador
         COALESCE(u_sup.nombre, 'admin') AS supervisor_nombre,
         COALESCE(u_sup.nombre, 'admin') AS supervisor_asignador,
         
@@ -163,7 +162,6 @@ exports.obtenerAsignaciones = async (req, res) => {
         COALESCE(u1.nombre, 'Sin Asignar') AS tecnico_principal,
         u2.nombre AS tecnico_secundario_nombre,
         
-        -- Concatenación de acompañantes
         COALESCE(
           (
             SELECT STRING_AGG(DISTINCT u_acomp.nombre, ', ')
@@ -222,13 +220,12 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 8. Crear nueva asignación (Guarda el ID del Supervisor en sesión)
+ * 8. Crear nueva asignación
  */
 exports.asignarTrabajo = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
   
-  // Extraer el ID real del usuario supervisor autenticado desde el Token JWT
   const supervisorId = req.user?.id || 
                        req.usuario?.id || 
                        req.user?.usuario_id || 
@@ -280,7 +277,6 @@ exports.asignarTrabajo = async (req, res) => {
 
     const fechaAsigFinal = fecha_asignacion || fecha_inicio || new Date().toISOString().split('T')[0];
 
-    // Asegurar columna creado_por en pau_actividades
     await client.query(`
       ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;
     `);
@@ -424,7 +420,6 @@ exports.editarAsignacion = async (req, res) => {
 
     const result = await client.query(query, values);
 
-    // Limpiar cuadrilla previa y re-insertar de forma limpia
     await client.query(
       `DELETE FROM pau_actividades_cuadrilla WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
       [id]
@@ -454,7 +449,7 @@ exports.editarAsignacion = async (req, res) => {
 };
 
 /**
- * 10. Eliminar asignación por ID (CON ELIMINACIÓN EN CASCADA DE AVANCES Y CUADRILLA)
+ * 10. Eliminar asignación por ID
  */
 exports.eliminarAsignacion = async (req, res) => {
   const { id } = req.params;
@@ -498,7 +493,7 @@ exports.eliminarAsignacion = async (req, res) => {
 };
 
 /**
- * 11. Crear asignaciones masivas para un mismo departamento (Lote/Carrito)
+ * 11. Crear asignaciones masivas
  */
 exports.asignarTrabajoMasivo = async (req, res) => {
   const {
@@ -507,7 +502,7 @@ exports.asignarTrabajoMasivo = async (req, res) => {
     fecha_asignacion,
     proyecto_id,
     pau_id,
-    actividades // Array de { actividad_id, cantidad, porcentaje_pago, observaciones }
+    actividades
   } = req.body;
 
   const supervisorId = req.user?.id || req.usuario?.id || req.user?.usuario_id || req.usuario?.usuario_id || req.body.supervisor_id || req.body.creado_por;
@@ -595,8 +590,9 @@ exports.asignarTrabajoMasivo = async (req, res) => {
     client.release();
   }
 };
+
 /**
- * 12. Obtener el presupuesto de un departamento y el saldo disponible por asignar
+ * 12. Obtener el presupuesto de un departamento y el saldo disponible
  */
 exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
   const { pauId } = req.params;
@@ -608,7 +604,6 @@ exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
         ac.unidad_medida,
         COALESCE(pd.cantidad_presupuestada, 0) AS cantidad_presupuestada,
         
-        -- Suma de lo que el supervisor ya asignó a los técnicos
         COALESCE((
           SELECT SUM(pa.cantidad_presupuestada) 
           FROM pau_actividades pa 
@@ -616,7 +611,6 @@ exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
             AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
         ), 0) AS cantidad_ya_asignada,
 
-        -- Saldo pendiente por liberar / asignar
         COALESCE(pd.cantidad_presupuestada, 0) - COALESCE((
           SELECT SUM(pa.cantidad_presupuestada) 
           FROM pau_actividades pa 
@@ -624,7 +618,6 @@ exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
             AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
         ), 0) AS saldo_por_asignar,
 
-        -- Suma del trabajo ejecutado real por los técnicos
         COALESCE((
           SELECT SUM(ra.cantidad_ejecutada) 
           FROM pau_actividades pa 
@@ -647,10 +640,10 @@ exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
 };
 
 /**
- * 13. Guardar / Cargar Presupuesto de Actividades por Departamento
+ * 13. Guardar / Cargar Presupuesto por Departamento
  */
 exports.guardarPresupuestoDpto = async (req, res) => {
-  const { pau_id, presupuesto } = req.body; // presupuesto: [{ actividad_id, cantidad_presupuestada }]
+  const { pau_id, presupuesto } = req.body;
   if (!pau_id || !Array.isArray(presupuesto)) {
     return res.status(400).json({ error: 'Faltan datos de presupuesto.' });
   }
@@ -679,7 +672,7 @@ exports.guardarPresupuestoDpto = async (req, res) => {
 };
 
 /**
- * 14. Calcular el Porcentaje de Avance Real para la Matriz por Pisos
+ * 14. CORREGIDO: Calcular el Porcentaje de Avance Real para la Matriz por Pisos
  */
 exports.obtenerAvanceMatrizPisos = async (req, res) => {
   const { proyectoId } = req.params;
@@ -689,7 +682,13 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
         p.id AS pau_id,
         p.codigo AS pau_codigo,
         p.nombre AS pau_nombre,
-        COALESCE(p.piso, 'Piso 1') AS piso,
+        
+        -- Detección dinámica del piso usando los primeros dígitos del número de departamento
+        CASE 
+          WHEN LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) >= 3 THEN 
+            'Piso ' || SUBSTRING(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g') FROM 1 FOR LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) - 2)
+          ELSE 'Piso 1'
+        END AS piso,
         
         -- Total Presupuestado del Dpto
         COALESCE((
@@ -708,18 +707,22 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
 
       FROM paus p
       WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
-      ORDER BY p.piso ASC, p.codigo ASC;
+      ORDER BY p.codigo ASC;
     `;
+
     const result = await pool.query(query, [proyectoId]);
 
-    // Procesar porcentaje real
     const datosProcesados = result.rows.map(row => {
-      const pres = parseFloat(row.total_presupuestado);
-      const ejec = parseFloat(row.total_ejecutado);
+      const pres = parseFloat(row.total_presupuestado) || 0;
+      const ejec = parseFloat(row.total_ejecutado) || 0;
       let porcentaje = 0;
+
       if (pres > 0) {
         porcentaje = Math.min(Math.round((ejec / pres) * 100), 100);
+      } else if (ejec > 0) {
+        porcentaje = 100;
       }
+
       return {
         ...row,
         porcentaje_avance: porcentaje

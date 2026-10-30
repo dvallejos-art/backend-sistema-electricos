@@ -130,7 +130,7 @@ exports.obtenerActividadesPorEdificio = async (req, res) => {
 };
 
 /**
- * 7. Obtener todas las asignaciones con CONCATENACIÓN DE TODOS LOS ACOMPAÑANTES
+ * 7. Obtener todas las asignaciones (muestra el Nombre Real del Supervisor que asignó)
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -153,11 +153,17 @@ exports.obtenerAsignaciones = async (req, res) => {
         pa.actividad_id,
         pa.tecnico_id,
         pa.tecnico_secundario_id,
+        pa.creado_por,
+        
+        -- Nombre del Supervisor Asignador
+        COALESCE(u_sup.nombre, 'admin') AS supervisor_nombre,
+        COALESCE(u_sup.nombre, 'admin') AS supervisor_asignador,
+        
         COALESCE(u1.nombre, 'Sin Asignar') AS tecnico,
         COALESCE(u1.nombre, 'Sin Asignar') AS tecnico_principal,
         u2.nombre AS tecnico_secundario_nombre,
         
-        -- Concatenación unificada de acompañantes (prioriza la tabla de cuadrillas)
+        -- Concatenación de acompañantes
         COALESCE(
           (
             SELECT STRING_AGG(DISTINCT u_acomp.nombre, ', ')
@@ -177,7 +183,6 @@ exports.obtenerAsignaciones = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         
-        -- Cálculo de avances registrados
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -204,6 +209,7 @@ exports.obtenerAsignaciones = async (req, res) => {
       LEFT JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
       LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
+      LEFT JOIN usuarios u_sup ON CAST(u_sup.id AS TEXT) = CAST(pa.creado_por AS TEXT)
       ORDER BY pa.id DESC;
     `;
 
@@ -216,13 +222,15 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 8. Crear nueva asignación
+ * 8. Crear nueva asignación (Guarda el ID del Supervisor que crea el registro)
  */
 exports.asignarTrabajo = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
   
-  // Extraer acompañantes garantizando formato array
+  // ID del supervisor en sesión
+  const supervisorId = req.user ? req.user.id : (req.usuario ? req.usuario.id : req.body.creado_por);
+
   let listaAcompanantes = [];
   if (Array.isArray(req.body.acompanantes)) {
     listaAcompanantes = req.body.acompanantes;
@@ -276,9 +284,10 @@ exports.asignarTrabajo = async (req, res) => {
         cantidad_presupuestada,
         observaciones,
         fecha_inicio,
-        fecha_fin
+        fecha_fin,
+        creado_por
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *;
     `;
 
@@ -290,7 +299,8 @@ exports.asignarTrabajo = async (req, res) => {
       parseFloat(cantidad),
       obsFinales,
       fechaAsigFinal,
-      fecha_fin || null
+      fecha_fin || null,
+      supervisorId ? parseInt(supervisorId, 10) : null
     ];
 
     const result = await client.query(query, values);
@@ -304,7 +314,6 @@ exports.asignarTrabajo = async (req, res) => {
       );
     `);
 
-    // Guardar a TODOS los integrantes recibidos en pau_actividades_cuadrilla
     const procesados = new Set();
     for (const acompId of listaAcompanantes) {
       const idNum = parseInt(acompId, 10);

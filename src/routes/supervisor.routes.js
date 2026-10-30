@@ -49,11 +49,15 @@ if (typeof supervisorController.obtenerActividades === 'function') {
 }
 
 // 7. Resumen de asignaciones
-router.get('/asignaciones', verificarAuth, supervisorController.obtenerAsignaciones);
+if (typeof supervisorController.obtenerAsignaciones === 'function') {
+  router.get('/asignaciones', verificarAuth, supervisorController.obtenerAsignaciones);
+}
 
 // 8. Crear nueva asignación individual
 const handlerAsignar = supervisorController.asignarTrabajo || supervisorController.registrarAvance;
-router.post('/asignar', verificarAuth, handlerAsignar);
+if (typeof handlerAsignar === 'function') {
+  router.post('/asignar', verificarAuth, handlerAsignar);
+}
 
 // 🚀 8b. Nueva asignación masiva multi-rubro (Carrito por departamento)
 if (typeof supervisorController.asignarTrabajoMasivo === 'function') {
@@ -61,9 +65,27 @@ if (typeof supervisorController.asignarTrabajoMasivo === 'function') {
 }
 
 // ✏️ 9. Editar asignación existente
-router.put('/asignaciones/:id', verificarAuth, supervisorController.editarAsignacion);
+if (typeof supervisorController.editarAsignacion === 'function') {
+  router.put('/asignaciones/:id', verificarAuth, supervisorController.editarAsignacion);
+}
 
 // 🗑️ 10. Eliminar asignación por ID
-router.delete('/asignaciones/:id', verificarAuth, supervisorController.eliminarAsignacion);
+if (typeof supervisorController.eliminarAsignacion === 'function') {
+  router.delete('/asignaciones/:id', verificarAuth, supervisorController.eliminarAsignacion);
+}
 
+// 📊 11. Rutas de Presupuesto x Departamento y Matriz de Avance
+if (typeof supervisorController.obtenerPresupuestoYSaldosDpto === 'function') {
+  router.get('/paus/:pauId/presupuesto-saldos', verificarAuth, supervisorController.obtenerPresupuestoYSaldosDpto);
+}
+
+if (typeof supervisorController.guardarPresupuestoDpto === 'function') {
+  router.post('/presupuesto-dpto', verificarAuth, supervisorController.guardarPresupuestoDpto);
+}
+
+if (typeof supervisorController.obtenerAvanceMatrizPisos === 'function') {
+  router.get('/proyectos/:proyectoId/matriz-avance', verificarAuth, supervisorController.obtenerAvanceMatrizPisos);
+}
+
+// ⚠️ El module.exports SIEMPRE debe ser la ÚLTIMA línea del archivo
 module.exports = router;

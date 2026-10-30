@@ -496,3 +496,102 @@ exports.eliminarAsignacion = async (req, res) => {
     client.release();
   }
 };
+
+/**
+ * 11. Crear asignaciones masivas para un mismo departamento (Lote/Carrito)
+ */
+exports.asignarTrabajoMasivo = async (req, res) => {
+  const {
+    tecnico_id,
+    acompanantes,
+    fecha_asignacion,
+    proyecto_id,
+    pau_id,
+    actividades // Array de { actividad_id, cantidad, porcentaje_pago, observaciones }
+  } = req.body;
+
+  const supervisorId = req.user?.id || req.usuario?.id || req.user?.usuario_id || req.usuario?.usuario_id || req.body.supervisor_id || req.body.creado_por;
+
+  if (!tecnico_id || !proyecto_id || !pau_id || !Array.isArray(actividades) || actividades.length === 0) {
+    return res.status(400).json({ error: 'Faltan datos requeridos o la lista de actividades está vacía.' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    let secId = null;
+    const listaAcomp = Array.isArray(acompanantes) ? acompanantes : [];
+    if (listaAcomp.length > 0) {
+      const parsedFirst = parseInt(listaAcomp[0], 10);
+      if (!isNaN(parsedFirst)) secId = parsedFirst;
+    }
+
+    const fechaAsigFinal = fecha_asignacion || new Date().toISOString().split('T')[0];
+
+    await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
+        id SERIAL PRIMARY KEY,
+        pau_actividad_id INT,
+        tecnico_id INT
+      );
+    `);
+
+    const asignacionesCreadas = [];
+
+    for (const item of actividades) {
+      const pctReal = parseFloat(item.porcentaje_pago || 100);
+      let obsFinales = item.observaciones || '';
+      if (pctReal < 100 && !obsFinales.includes('[Etapa:')) {
+        obsFinales = `[Etapa: ${pctReal}%] ${obsFinales}`.trim();
+      }
+
+      const insertQuery = `
+        INSERT INTO pau_actividades (
+          pau_id, actividad_id, tecnico_id, tecnico_secundario_id,
+          cantidad_presupuestada, observaciones, fecha_inicio, creado_por
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING *;
+      `;
+
+      const values = [
+        parseInt(pau_id, 10),
+        parseInt(item.actividad_id, 10),
+        parseInt(tecnico_id, 10),
+        secId,
+        parseFloat(item.cantidad),
+        obsFinales,
+        fechaAsigFinal,
+        supervisorId ? parseInt(supervisorId, 10) : null
+      ];
+
+      const resIns = await client.query(insertQuery, values);
+      const asignacionId = resIns.rows[0].id;
+      asignacionesCreadas.push(resIns.rows[0]);
+
+      const procesados = new Set();
+      for (const acompId of listaAcomp) {
+        const idNum = parseInt(acompId, 10);
+        if (!isNaN(idNum) && !procesados.has(idNum)) {
+          procesados.add(idNum);
+          await client.query(
+            `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+            [asignacionId, idNum]
+          );
+        }
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ mensaje: '¡Todas las actividades se asignaron correctamente!', asignaciones: asignacionesCreadas });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error en asignación masiva:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+};

@@ -222,14 +222,19 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 8. Crear nueva asignación (Guarda el ID del Supervisor que crea el registro)
+ * 8. Crear nueva asignación (Guarda el ID del Supervisor en sesión)
  */
 exports.asignarTrabajo = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
   
-  // ID del supervisor en sesión
-  const supervisorId = req.user ? req.user.id : (req.usuario ? req.usuario.id : req.body.creado_por);
+  // Extraer el ID real del usuario supervisor autenticado desde el Token JWT
+  const supervisorId = req.user?.id || 
+                       req.usuario?.id || 
+                       req.user?.usuario_id || 
+                       req.usuario?.usuario_id || 
+                       req.body.supervisor_id || 
+                       req.body.creado_por;
 
   let listaAcompanantes = [];
   if (Array.isArray(req.body.acompanantes)) {
@@ -274,6 +279,11 @@ exports.asignarTrabajo = async (req, res) => {
     }
 
     const fechaAsigFinal = fecha_asignacion || fecha_inicio || new Date().toISOString().split('T')[0];
+
+    // Asegurar columna creado_por en pau_actividades
+    await client.query(`
+      ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;
+    `);
 
     const query = `
       INSERT INTO pau_actividades (

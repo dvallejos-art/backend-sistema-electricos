@@ -802,47 +802,96 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
 };
 
 /**
- * 15. Crear actividad provisional (No afecta saldos de presupuesto)
+ * 15. Crear actividad provisional (Con soporte de cuadrilla)
  */
 exports.crearActividadProvisional = async (req, res) => {
-  const { tecnico_id, pau_id, actividad_id, cantidad, observaciones, fecha_asignacion } = req.body;
+  const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
+  const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario;
+  
   const supervisorId = req.user?.id || req.usuario?.id || req.body.supervisor_id || req.body.creado_por;
+
+  let listaAcompanantes = [];
+  if (Array.isArray(req.body.acompanantes)) {
+    listaAcompanantes = req.body.acompanantes;
+  } else if (rawSecundario) {
+    listaAcompanantes = [rawSecundario];
+  }
+
+  const { pau_id, actividad_id, cantidad, observaciones, fecha_asignacion } = req.body;
 
   if (!tecnico_id || !pau_id || !actividad_id || !cantidad) {
     return res.status(400).json({ error: 'Faltan datos obligatorios para la actividad provisional.' });
   }
 
+  const client = await pool.connect();
+
   try {
-    await pool.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS es_provisional BOOLEAN DEFAULT FALSE;`);
+    await client.query('BEGIN');
+
+    await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS es_provisional BOOLEAN DEFAULT FALSE;`);
+    await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;`);
+
+    let secId = null;
+    if (listaAcompanantes.length > 0) {
+      const parsedFirst = parseInt(listaAcompanantes[0], 10);
+      if (!isNaN(parsedFirst)) secId = parsedFirst;
+    }
 
     const query = `
       INSERT INTO pau_actividades (
-        pau_id, actividad_id, tecnico_id, cantidad_presupuestada, 
+        pau_id, actividad_id, tecnico_id, tecnico_secundario_id, cantidad_presupuestada, 
         observaciones, fecha_inicio, creado_por, es_provisional
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
       RETURNING *;
     `;
     const values = [
       parseInt(pau_id, 10),
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
+      secId,
       parseFloat(cantidad),
       `[PROVISIONAL] ${observaciones || ''}`.trim(),
       fecha_asignacion || new Date().toISOString().split('T')[0],
       supervisorId ? parseInt(supervisorId, 10) : null
     ];
 
-    const result = await pool.query(query, values);
+    const result = await client.query(query, values);
+    const asignacionId = result.rows[0].id;
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
+        id SERIAL PRIMARY KEY,
+        pau_actividad_id INT,
+        tecnico_id INT
+      );
+    `);
+
+    const procesados = new Set();
+    for (const acompId of listaAcompanantes) {
+      const idNum = parseInt(acompId, 10);
+      if (!isNaN(idNum) && !procesados.has(idNum)) {
+        procesados.add(idNum);
+        await client.query(
+          `INSERT INTO pau_actividades_cuadrilla (pau_actividad_id, tecnico_id) VALUES ($1, $2);`,
+          [asignacionId, idNum]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
     res.json({ mensaje: 'Actividad provisional creada con éxito.', asignacion: result.rows[0] });
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('Error al crear actividad provisional:', err);
     res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 };
 
 /**
- * 16. Obtener listado de actividades provisionales para auditoría
+ * 16. Obtener listado de actividades provisionales (Incluye cuadrilla)
  */
 exports.obtenerActividadesProvisionales = async (req, res) => {
   try {
@@ -852,6 +901,16 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
         pa.fecha_inicio AS fecha,
         COALESCE(u_sup.nombre, 'admin') AS supervisor,
         COALESCE(u_tec.nombre, 'Sin Técnico') AS tecnico,
+        COALESCE(
+          (
+            SELECT STRING_AGG(DISTINCT u_acomp.nombre, ', ')
+            FROM pau_actividades_cuadrilla pac
+            JOIN usuarios u_acomp ON CAST(u_acomp.id AS TEXT) = CAST(pac.tecnico_id AS TEXT)
+            WHERE CAST(pac.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          ),
+          u2.nombre,
+          'Individual'
+        ) AS acompanantes_nombres,
         COALESCE(pr.nombre, 'Sin Proyecto') AS edificio,
         COALESCE(p.nombre, p.codigo, 'N/A') AS departamento,
         COALESCE(ac.descripcion, 'Sin Actividad') AS actividad,
@@ -880,6 +939,7 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
       LEFT JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
       LEFT JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
       LEFT JOIN usuarios u_tec ON CAST(u_tec.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
+      LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       LEFT JOIN usuarios u_sup ON CAST(u_sup.id AS TEXT) = CAST(pa.creado_por AS TEXT)
       WHERE pa.es_provisional = TRUE
       ORDER BY pa.id DESC;

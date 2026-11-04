@@ -63,7 +63,7 @@ exports.obtenerPausProyectoTecnico = async (req, res) => {
 };
 
 /**
- * 3. Obtener actividades asignadas con Saldo Disponible Real y Observaciones del Supervisor
+ * 3. Obtener actividades asignadas con Saldo Disponible Real y Observaciones
  */
 exports.obtenerActividadesPauTecnico = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -82,7 +82,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         pa.actividad_id,
         pa.tecnico_id,
         pa.tecnico_secundario_id,
-        pa.observaciones AS observaciones_supervisor, -- 🟢 INCLUIDO: Observaciones escritas por el supervisor
+        pa.observaciones, -- 🟢 CAMBIO CLAVE: Cargar observaciones asignadas por el supervisor
         pa.es_provisional,
         u1.nombre AS tecnico_lider_nombre,
         u2.nombre AS tecnico_secundario_nombre,
@@ -144,11 +144,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
       ...row,
       tecnico_id: row.tecnico_id ? String(row.tecnico_id) : null,
       tecnico_secundario_id: row.tecnico_secundario_id ? String(row.tecnico_secundario_id) : null,
-      disponibleReal: parseFloat(row.cantidad_disponible || 0),
-      // 🟢 Limpieza del formato de la nota del supervisor para eliminar corchetes del sistema
-      observacion_limpia: row.observaciones_supervisor 
-        ? row.observaciones_supervisor.replace(/\[PROVISIONAL\]/gi, '').trim() 
-        : ''
+      disponibleReal: parseFloat(row.cantidad_disponible || 0)
     }));
 
     res.json(mapeados);
@@ -157,7 +153,6 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 /**
  * 4. Registrar Avance Diario (Bloqueo estricto para Acompañantes)
  */

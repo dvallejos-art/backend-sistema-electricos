@@ -1018,3 +1018,44 @@ exports.eliminarPau = async (req, res) => {
     client.release();
   }
 };
+
+/**
+ * 18. Eliminar actividad provisional
+ */
+exports.eliminarActividadProvisional = async (req, res) => {
+  const { id } = req.params;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `DELETE FROM pau_actividades_cuadrilla WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
+      [id]
+    );
+
+    await client.query(
+      `DELETE FROM registros_avance WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
+      [id]
+    );
+
+    const result = await client.query(
+      `DELETE FROM pau_actividades WHERE CAST(id AS TEXT) = CAST($1 AS TEXT) AND es_provisional = TRUE;`,
+      [id]
+    );
+
+    await client.query('COMMIT');
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'La actividad provisional no existe o ya fue eliminada.' });
+    }
+
+    res.json({ mensaje: 'Actividad provisional eliminada correctamente.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al eliminar actividad provisional:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+};

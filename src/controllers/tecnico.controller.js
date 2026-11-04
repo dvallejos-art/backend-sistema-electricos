@@ -82,7 +82,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         pa.actividad_id,
         pa.tecnico_id,
         pa.tecnico_secundario_id,
-        pa.observaciones, -- 🟢 CAMBIO CLAVE: Cargar observaciones asignadas por el supervisor
+        pa.observaciones, -- Observaciones asignadas por el supervisor
         pa.es_provisional,
         u1.nombre AS tecnico_lider_nombre,
         u2.nombre AS tecnico_secundario_nombre,
@@ -94,7 +94,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
 
-        -- Suma de avances
+        -- Suma de avances registrados
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -153,6 +153,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 /**
  * 4. Registrar Avance Diario (Bloqueo estricto para Acompañantes)
  */

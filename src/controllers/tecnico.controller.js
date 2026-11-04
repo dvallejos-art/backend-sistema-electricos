@@ -82,7 +82,11 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         pa.actividad_id,
         pa.tecnico_id,
         pa.tecnico_secundario_id,
-        pa.observaciones, -- Observaciones asignadas por el supervisor
+        
+        /* 🟢 CAMBIO CLAVE: Obtener explícitamente las observaciones guardadas por Admin/Supervisor */
+        pa.observaciones,
+        pa.observaciones AS observaciones_supervisor,
+        
         pa.es_provisional,
         u1.nombre AS tecnico_lider_nombre,
         u2.nombre AS tecnico_secundario_nombre,
@@ -94,7 +98,7 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_asignada,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad,
 
-        -- Suma de avances registrados
+        -- Suma de avances
         COALESCE(
           (
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -153,9 +157,8 @@ exports.obtenerActividadesPauTecnico = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 /**
- * 4. Registrar Avance Diario (Bloqueo estricto para Acompañantes)
+ * 4. Registrar Avance Diario
  */
 exports.registrarAvanceDiario = async (req, res) => {
   const { pau_id, actividad_id, pau_actividad_id, cantidad, cantidad_ejecutada, observaciones } = req.body;
@@ -196,8 +199,6 @@ exports.registrarAvanceDiario = async (req, res) => {
     }
 
     const asignacion = checkResult.rows[0];
-
-    // Bloqueo en backend: solo el líder principal (tecnico_id) puede escribir avances
     const esLider = String(asignacion.tecnico_id).trim() === String(tecnicoId).trim();
 
     if (!esLider) {
@@ -247,7 +248,7 @@ exports.registrarAvanceDiario = async (req, res) => {
 };
 
 /**
- * 5. Historial de Mis Avances (Incluye producción de la cuadrilla)
+ * 5. Historial de Mis Avances
  */
 exports.obtenerMisAvances = async (req, res) => {
   const tecnicoId = req.user ? req.user.id : (req.usuario ? req.usuario.id : (req.params.id || req.query.tecnico_id));

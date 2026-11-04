@@ -739,7 +739,7 @@ exports.guardarPresupuestoDpto = async (req, res) => {
 };
 
 /**
- * 14. Calcular el Porcentaje de Avance Real para la Matriz por Pisos
+ * 14. Calcular el Porcentaje de Avance Real para la Matriz por Pisos (Soporta Gradas y Áreas Comunes)
  */
 exports.obtenerAvanceMatrizPisos = async (req, res) => {
   const { proyectoId } = req.params;
@@ -750,18 +750,35 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
         p.codigo AS pau_codigo,
         p.nombre AS pau_nombre,
         
+        -- Detección avanzada del número de piso (busca patrones "piso X", "P14" o los primeros dígitos)
         CASE 
+          -- Si contiene la palabra "piso" seguida de número (ej: Gradas fase 2 piso 14 -> Piso 14)
+          WHEN LOWER(p.codigo) ~ 'piso\s*\d+' THEN 
+            'Piso ' || (REGEXP_MATCHES(LOWER(p.codigo), 'piso\s*(\d+)'))[1]
+          
+          -- Si empieza con P seguido de número (ej: P14 - Gradas -> Piso 14)
+          WHEN LOWER(p.codigo) ~ '^p\d+' THEN 
+            'Piso ' || (REGEXP_MATCHES(LOWER(p.codigo), '^p(\d+)'))[1]
+
+          -- Para departamentos numéricos de 3 o más dígitos (ej: 201 -> Piso 2, 1402 -> Piso 14)
           WHEN LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) >= 3 THEN 
             'Piso ' || SUBSTRING(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g') FROM 1 FOR LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) - 2)
+
+          -- Áreas generales de todo el edificio
+          WHEN LOWER(p.codigo) LIKE '%general%' OR LOWER(p.codigo) LIKE '%comun%' THEN 
+            'Áreas Generales'
+            
           ELSE 'Piso 1'
         END AS piso,
         
+        -- Total Presupuestado del Dpto/Área
         COALESCE((
           SELECT SUM(pd.cantidad_presupuestada)
           FROM presupuesto_departamento pd
           WHERE CAST(pd.pau_id AS TEXT) = CAST(p.id AS TEXT)
         ), 0) AS total_presupuestado,
 
+        -- Total Ejecutado Real por los Técnicos
         COALESCE((
           SELECT SUM(ra.cantidad_ejecutada)
           FROM pau_actividades pa
@@ -800,7 +817,6 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 /**
  * 15. Crear actividad provisional (Soporta departamento opcional / general por edificio)
  */

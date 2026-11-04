@@ -259,7 +259,7 @@ exports.asignarTrabajo = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 🔴 RESTRICCIÓN DE PRESUPUESTO Y SALDO (Solo cuenta asignaciones normales)
+    // RESTRICCIÓN DE PRESUPUESTO Y SALDO
     const querySaldo = `
       SELECT 
         COALESCE(pd.cantidad_presupuestada, 0) AS pres,
@@ -739,7 +739,6 @@ exports.guardarPresupuestoDpto = async (req, res) => {
 };
 
 /**
-/**
  * 14. Calcular el Porcentaje de Avance Real para la Matriz por Pisos (Versión SQL Segura)
  */
 exports.obtenerAvanceMatrizPisos = async (req, res) => {
@@ -751,35 +750,28 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
         p.codigo AS pau_codigo,
         p.nombre AS pau_nombre,
         
-        -- Detección segura de nivel/piso sin usar REGEXP_MATCHES directo
         CASE 
-          -- Detección de patrones como 'Gradas piso 14' o 'piso 2'
           WHEN LOWER(p.codigo) ~ 'piso\s*\d+' THEN 
             'Piso ' || SUBSTRING(LOWER(p.codigo) FROM 'piso\s*(\d+)')
 
-          -- Detección de patrones como 'P14' o 'P2'
           WHEN LOWER(p.codigo) ~ '^p\d+' THEN 
             'Piso ' || SUBSTRING(LOWER(p.codigo) FROM '^p(\d+)')
 
-          -- Departamentos con números (ej: 201 -> Piso 2, 1402 -> Piso 14)
           WHEN LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) >= 3 THEN 
             'Piso ' || SUBSTRING(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g') FROM 1 FOR LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) - 2)
 
-          -- Áreas generales o comunes
           WHEN LOWER(p.codigo) LIKE '%general%' OR LOWER(p.codigo) LIKE '%comun%' THEN 
             'Áreas Generales'
             
           ELSE 'Piso 1'
         END AS piso,
         
-        -- Total Presupuestado del Dpto/Área
         COALESCE((
           SELECT SUM(pd.cantidad_presupuestada)
           FROM presupuesto_departamento pd
           WHERE CAST(pd.pau_id AS TEXT) = CAST(p.id AS TEXT)
         ), 0) AS total_presupuestado,
 
-        -- Total Ejecutado Real
         COALESCE((
           SELECT SUM(ra.cantidad_ejecutada)
           FROM pau_actividades pa
@@ -818,6 +810,7 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 /**
  * 15. Crear actividad provisional (Soporta departamento opcional / general por edificio)
  */
@@ -850,10 +843,9 @@ exports.crearActividadProvisional = async (req, res) => {
 
     let finalPauId = pau_id ? parseInt(pau_id, 10) : null;
 
-    // Si no se especificó un departamento, busca o crea uno genérico para el edificio
     if (!finalPauId && proyecto_id) {
       const resGen = await client.query(
-        `SELECT id FROM paus WHERE CAST(proyecto_id AS TEXT) = CAST($1 AS TEXT) AND LOWER(codigo) = 'general' LIMIT 1;`,
+        `SELECT id FROM paus WHERE CAST(proyecto_id AS TEXT) = CAST($1 AS TEXT) AND (LOWER(codigo) LIKE '%general%' OR LOWER(codigo) LIKE '%comun%') LIMIT 1;`,
         [proyecto_id]
       );
       if (resGen.rows.length > 0) {
@@ -873,6 +865,8 @@ exports.crearActividadProvisional = async (req, res) => {
       if (!isNaN(parsedFirst)) secId = parsedFirst;
     }
 
+    const obsTexto = observaciones ? `[PROVISIONAL] ${observaciones.trim()}` : '[PROVISIONAL]';
+
     const query = `
       INSERT INTO pau_actividades (
         pau_id, actividad_id, tecnico_id, tecnico_secundario_id, cantidad_presupuestada, 
@@ -887,7 +881,7 @@ exports.crearActividadProvisional = async (req, res) => {
       parseInt(tecnico_id, 10),
       secId,
       parseFloat(cantidad),
-      `[PROVISIONAL] ${observaciones || ''}`.trim(),
+      obsTexto,
       fecha_asignacion || new Date().toISOString().split('T')[0],
       supervisorId ? parseInt(supervisorId, 10) : null
     ];
@@ -927,7 +921,7 @@ exports.crearActividadProvisional = async (req, res) => {
 };
 
 /**
- * 16. Obtener listado de actividades provisionales (Incluye cuadrilla)
+ * 16. Obtener listado de actividades provisionales (Completo)
  */
 exports.obtenerActividadesProvisionales = async (req, res) => {
   try {
@@ -948,7 +942,7 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
           'Individual'
         ) AS acompanantes_nombres,
         COALESCE(pr.nombre, 'Sin Proyecto') AS edificio,
-        COALESCE(p.nombre, p.codigo, 'N/A') AS departamento,
+        COALESCE(p.nombre, p.codigo, 'General') AS departamento,
         COALESCE(ac.descripcion, 'Sin Actividad') AS actividad,
         CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_solicitada,
         COALESCE((
@@ -956,20 +950,20 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
           FROM registros_avance ra
           WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
         ), 0) AS cantidad_ejecutada,
+        pa.observaciones,
         CASE 
           WHEN COALESCE((
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
             WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
-          ), 0) >= pa.cantidad_presupuestada THEN 'Verificado / Realizado'
+          ), 0) >= CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) THEN 'Verificado (100%)'
           WHEN COALESCE((
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
             FROM registros_avance ra
             WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
           ), 0) > 0 THEN 'En Proceso'
           ELSE 'Pendiente'
-        END AS estado,
-        pa.observaciones
+        END AS estado
       FROM pau_actividades pa
       LEFT JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       LEFT JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
@@ -977,13 +971,50 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
       LEFT JOIN usuarios u_tec ON CAST(u_tec.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       LEFT JOIN usuarios u_sup ON CAST(u_sup.id AS TEXT) = CAST(pa.creado_por AS TEXT)
-      WHERE pa.es_provisional = TRUE
+      WHERE COALESCE(pa.es_provisional, FALSE) = TRUE
       ORDER BY pa.id DESC;
     `;
+
     const result = await pool.query(query);
     res.json(result.rows);
   } catch (err) {
-    console.error('Error al obtener actividades provisionales:', err);
+    console.error('Error al obtener provisionales:', err);
     res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * 17. Eliminar departamento (PAU) y su presupuesto
+ */
+exports.eliminarPau = async (req, res) => {
+  const { idPau } = req.params;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `DELETE FROM presupuesto_departamento WHERE CAST(pau_id AS TEXT) = CAST($1 AS TEXT);`,
+      [idPau]
+    );
+
+    const result = await client.query(
+      `DELETE FROM paus WHERE CAST(id AS TEXT) = CAST($1 AS TEXT);`,
+      [idPau]
+    );
+
+    await client.query('COMMIT');
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'El departamento no existe o ya fue eliminado.' });
+    }
+
+    res.json({ mensaje: 'Departamento y presupuesto eliminados correctamente.' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error al eliminar departamento:', err);
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
   }
 };

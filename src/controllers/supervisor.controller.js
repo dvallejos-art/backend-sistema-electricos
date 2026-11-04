@@ -802,7 +802,7 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
 };
 
 /**
- * 15. Crear actividad provisional (Con soporte de cuadrilla)
+ * 15. Crear actividad provisional (Soporta departamento opcional / general por edificio)
  */
 exports.crearActividadProvisional = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
@@ -817,9 +817,9 @@ exports.crearActividadProvisional = async (req, res) => {
     listaAcompanantes = [rawSecundario];
   }
 
-  const { pau_id, actividad_id, cantidad, observaciones, fecha_asignacion } = req.body;
+  const { proyecto_id, pau_id, actividad_id, cantidad, observaciones, fecha_asignacion } = req.body;
 
-  if (!tecnico_id || !pau_id || !actividad_id || !cantidad) {
+  if (!tecnico_id || !actividad_id || !cantidad) {
     return res.status(400).json({ error: 'Faltan datos obligatorios para la actividad provisional.' });
   }
 
@@ -830,6 +830,25 @@ exports.crearActividadProvisional = async (req, res) => {
 
     await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS es_provisional BOOLEAN DEFAULT FALSE;`);
     await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;`);
+
+    let finalPauId = pau_id ? parseInt(pau_id, 10) : null;
+
+    // Si no se especificó un departamento, busca o crea uno genérico para el edificio
+    if (!finalPauId && proyecto_id) {
+      const resGen = await client.query(
+        `SELECT id FROM paus WHERE CAST(proyecto_id AS TEXT) = CAST($1 AS TEXT) AND LOWER(codigo) = 'general' LIMIT 1;`,
+        [proyecto_id]
+      );
+      if (resGen.rows.length > 0) {
+        finalPauId = resGen.rows[0].id;
+      } else {
+        const nuevoGen = await client.query(
+          `INSERT INTO paus (proyecto_id, codigo, nombre) VALUES ($1, 'GENERAL', 'Áreas Comunes / General') RETURNING id;`,
+          [parseInt(proyecto_id, 10)]
+        );
+        finalPauId = nuevoGen.rows[0].id;
+      }
+    }
 
     let secId = null;
     if (listaAcompanantes.length > 0) {
@@ -846,7 +865,7 @@ exports.crearActividadProvisional = async (req, res) => {
       RETURNING *;
     `;
     const values = [
-      parseInt(pau_id, 10),
+      finalPauId,
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
       secId,
@@ -880,7 +899,7 @@ exports.crearActividadProvisional = async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json({ mensaje: 'Actividad provisional creada con éxito.', asignacion: result.rows[0] });
+    res.json({ mensaje: 'Actividad provisional asignada con éxito.', asignacion: result.rows[0] });
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error al crear actividad provisional:', err);

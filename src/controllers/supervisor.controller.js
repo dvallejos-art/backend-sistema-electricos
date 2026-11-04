@@ -130,7 +130,7 @@ exports.obtenerActividadesPorEdificio = async (req, res) => {
 };
 
 /**
- * 7. Obtener todas las asignaciones
+ * 7. Obtener todas las asignaciones normales (Excluye provisionales)
  */
 exports.obtenerAsignaciones = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -208,6 +208,7 @@ exports.obtenerAsignaciones = async (req, res) => {
       LEFT JOIN usuarios u1 ON CAST(u1.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
       LEFT JOIN usuarios u2 ON CAST(u2.id AS TEXT) = CAST(pa.tecnico_secundario_id AS TEXT)
       LEFT JOIN usuarios u_sup ON CAST(u_sup.id AS TEXT) = CAST(pa.creado_por AS TEXT)
+      WHERE COALESCE(pa.es_provisional, FALSE) = FALSE
       ORDER BY pa.id DESC;
     `;
 
@@ -258,7 +259,7 @@ exports.asignarTrabajo = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 🔴 RESTRICCIÓN DE PRESUPUESTO Y SALDO
+    // 🔴 RESTRICCIÓN DE PRESUPUESTO Y SALDO (Solo cuenta asignaciones normales)
     const querySaldo = `
       SELECT 
         COALESCE(pd.cantidad_presupuestada, 0) AS pres,
@@ -267,6 +268,7 @@ exports.asignarTrabajo = async (req, res) => {
           FROM pau_actividades pa 
           WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
             AND CAST(pa.actividad_id AS TEXT) = CAST($2 AS TEXT)
+            AND COALESCE(pa.es_provisional, FALSE) = FALSE
         ), 0) AS asignado
       FROM presupuesto_departamento pd
       WHERE CAST(pd.pau_id AS TEXT) = CAST($1 AS TEXT)
@@ -309,13 +311,14 @@ exports.asignarTrabajo = async (req, res) => {
     const fechaAsigFinal = fecha_asignacion || fecha_inicio || new Date().toISOString().split('T')[0];
 
     await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;`);
+    await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS es_provisional BOOLEAN DEFAULT FALSE;`);
 
     const query = `
       INSERT INTO pau_actividades (
         pau_id, actividad_id, tecnico_id, tecnico_secundario_id,
-        cantidad_presupuestada, observaciones, fecha_inicio, fecha_fin, creado_por
+        cantidad_presupuestada, observaciones, fecha_inicio, fecha_fin, creado_por, es_provisional
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
       RETURNING *;
     `;
 
@@ -364,6 +367,7 @@ exports.asignarTrabajo = async (req, res) => {
     client.release();
   }
 };
+
 /**
  * 9. Editar asignación existente
  */
@@ -537,7 +541,6 @@ exports.asignarTrabajoMasivo = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // 🔴 VALIDAR PRESUPUESTO DE CADA RUBRO EN EL LOTE ANTES DE INSERTAR
     for (const item of actividades) {
       const querySaldo = `
         SELECT 
@@ -547,6 +550,7 @@ exports.asignarTrabajoMasivo = async (req, res) => {
             FROM pau_actividades pa 
             WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
               AND CAST(pa.actividad_id AS TEXT) = CAST($2 AS TEXT)
+              AND COALESCE(pa.es_provisional, FALSE) = FALSE
           ), 0) AS asignado
         FROM presupuesto_departamento pd
         WHERE CAST(pd.pau_id AS TEXT) = CAST($1 AS TEXT)
@@ -585,6 +589,7 @@ exports.asignarTrabajoMasivo = async (req, res) => {
     const fechaAsigFinal = fecha_asignacion || new Date().toISOString().split('T')[0];
 
     await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;`);
+    await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS es_provisional BOOLEAN DEFAULT FALSE;`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS pau_actividades_cuadrilla (
         id SERIAL PRIMARY KEY,
@@ -605,9 +610,9 @@ exports.asignarTrabajoMasivo = async (req, res) => {
       const insertQuery = `
         INSERT INTO pau_actividades (
           pau_id, actividad_id, tecnico_id, tecnico_secundario_id,
-          cantidad_presupuestada, observaciones, fecha_inicio, creado_por
+          cantidad_presupuestada, observaciones, fecha_inicio, creado_por, es_provisional
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, FALSE)
         RETURNING *;
       `;
 
@@ -651,7 +656,7 @@ exports.asignarTrabajoMasivo = async (req, res) => {
 };
 
 /**
- * 12. Obtener el presupuesto de un departamento y el saldo disponible
+ * 12. Obtener el presupuesto de un departamento y el saldo disponible (Excluye provisionales)
  */
 exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
   const { pauId } = req.params;
@@ -668,6 +673,7 @@ exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
           FROM pau_actividades pa 
           WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
             AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
+            AND COALESCE(pa.es_provisional, FALSE) = FALSE
         ), 0) AS cantidad_ya_asignada,
 
         COALESCE(pd.cantidad_presupuestada, 0) - COALESCE((
@@ -675,6 +681,7 @@ exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
           FROM pau_actividades pa 
           WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
             AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
+            AND COALESCE(pa.es_provisional, FALSE) = FALSE
         ), 0) AS saldo_por_asignar,
 
         COALESCE((
@@ -683,6 +690,7 @@ exports.obtenerPresupuestoYSaldosDpto = async (req, res) => {
           JOIN registros_avance ra ON CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
           WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
             AND CAST(pa.actividad_id AS TEXT) = CAST(ac.id AS TEXT)
+            AND COALESCE(pa.es_provisional, FALSE) = FALSE
         ), 0) AS cantidad_ejecutada_real
 
       FROM presupuesto_departamento pd
@@ -731,7 +739,7 @@ exports.guardarPresupuestoDpto = async (req, res) => {
 };
 
 /**
- * 14. CORREGIDO: Calcular el Porcentaje de Avance Real para la Matriz por Pisos
+ * 14. Calcular el Porcentaje de Avance Real para la Matriz por Pisos
  */
 exports.obtenerAvanceMatrizPisos = async (req, res) => {
   const { proyectoId } = req.params;
@@ -742,26 +750,24 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
         p.codigo AS pau_codigo,
         p.nombre AS pau_nombre,
         
-        -- Detección dinámica del piso usando los primeros dígitos del número de departamento
         CASE 
           WHEN LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) >= 3 THEN 
             'Piso ' || SUBSTRING(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g') FROM 1 FOR LENGTH(REGEXP_REPLACE(p.codigo, '[^0-9]', '', 'g')) - 2)
           ELSE 'Piso 1'
         END AS piso,
         
-        -- Total Presupuestado del Dpto
         COALESCE((
           SELECT SUM(pd.cantidad_presupuestada)
           FROM presupuesto_departamento pd
           WHERE CAST(pd.pau_id AS TEXT) = CAST(p.id AS TEXT)
         ), 0) AS total_presupuestado,
 
-        -- Total Ejecutado Real por los Técnicos
         COALESCE((
           SELECT SUM(ra.cantidad_ejecutada)
           FROM pau_actividades pa
           JOIN registros_avance ra ON CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
           WHERE CAST(pa.pau_id AS TEXT) = CAST(p.id AS TEXT)
+            AND COALESCE(pa.es_provisional, FALSE) = FALSE
         ), 0) AS total_ejecutado
 
       FROM paus p
@@ -791,6 +797,97 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
     res.json(datosProcesados);
   } catch (err) {
     console.error('Error al calcular avance de matriz:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * 15. Crear actividad provisional (No afecta saldos de presupuesto)
+ */
+exports.crearActividadProvisional = async (req, res) => {
+  const { tecnico_id, pau_id, actividad_id, cantidad, observaciones, fecha_asignacion } = req.body;
+  const supervisorId = req.user?.id || req.usuario?.id || req.body.supervisor_id || req.body.creado_por;
+
+  if (!tecnico_id || !pau_id || !actividad_id || !cantidad) {
+    return res.status(400).json({ error: 'Faltan datos obligatorios para la actividad provisional.' });
+  }
+
+  try {
+    await pool.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS es_provisional BOOLEAN DEFAULT FALSE;`);
+
+    const query = `
+      INSERT INTO pau_actividades (
+        pau_id, actividad_id, tecnico_id, cantidad_presupuestada, 
+        observaciones, fecha_inicio, creado_por, es_provisional
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+      RETURNING *;
+    `;
+    const values = [
+      parseInt(pau_id, 10),
+      parseInt(actividad_id, 10),
+      parseInt(tecnico_id, 10),
+      parseFloat(cantidad),
+      `[PROVISIONAL] ${observaciones || ''}`.trim(),
+      fecha_asignacion || new Date().toISOString().split('T')[0],
+      supervisorId ? parseInt(supervisorId, 10) : null
+    ];
+
+    const result = await pool.query(query, values);
+    res.json({ mensaje: 'Actividad provisional creada con éxito.', asignacion: result.rows[0] });
+  } catch (err) {
+    console.error('Error al crear actividad provisional:', err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+/**
+ * 16. Obtener listado de actividades provisionales para auditoría
+ */
+exports.obtenerActividadesProvisionales = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        pa.id,
+        pa.fecha_inicio AS fecha,
+        COALESCE(u_sup.nombre, 'admin') AS supervisor,
+        COALESCE(u_tec.nombre, 'Sin Técnico') AS tecnico,
+        COALESCE(pr.nombre, 'Sin Proyecto') AS edificio,
+        COALESCE(p.nombre, p.codigo, 'N/A') AS departamento,
+        COALESCE(ac.descripcion, 'Sin Actividad') AS actividad,
+        CAST(COALESCE(pa.cantidad_presupuestada, 0) AS NUMERIC) AS cantidad_solicitada,
+        COALESCE((
+          SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+          FROM registros_avance ra
+          WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+        ), 0) AS cantidad_ejecutada,
+        CASE 
+          WHEN COALESCE((
+            SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+            FROM registros_avance ra
+            WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          ), 0) >= pa.cantidad_presupuestada THEN 'Verificado / Realizado'
+          WHEN COALESCE((
+            SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+            FROM registros_avance ra
+            WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+          ), 0) > 0 THEN 'En Proceso'
+          ELSE 'Pendiente'
+        END AS estado,
+        pa.observaciones
+      FROM pau_actividades pa
+      LEFT JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
+      LEFT JOIN proyectos pr ON CAST(pr.id AS TEXT) = CAST(p.proyecto_id AS TEXT)
+      LEFT JOIN actividades_catalogo ac ON CAST(ac.id AS TEXT) = CAST(pa.actividad_id AS TEXT)
+      LEFT JOIN usuarios u_tec ON CAST(u_tec.id AS TEXT) = CAST(pa.tecnico_id AS TEXT)
+      LEFT JOIN usuarios u_sup ON CAST(u_sup.id AS TEXT) = CAST(pa.creado_por AS TEXT)
+      WHERE pa.es_provisional = TRUE
+      ORDER BY pa.id DESC;
+    `;
+    const result = await pool.query(query);
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error al obtener actividades provisionales:', err);
     res.status(500).json({ error: err.message });
   }
 };

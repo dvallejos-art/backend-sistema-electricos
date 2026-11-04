@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const supervisorController = require('../controllers/supervisor.controller');
 
-// Middleware para verificar autenticación y token JWT
+// 🔒 Middleware para verificar autenticación y token JWT (DEBE IR ANTES DE USARSE)
 const verificarAuth = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Acceso denegado. Token no proporcionado.' });
@@ -59,22 +59,31 @@ if (typeof handlerAsignar === 'function') {
   router.post('/asignar', verificarAuth, handlerAsignar);
 }
 
-// 🚀 8b. Nueva asignación masiva multi-rubro (Carrito por departamento)
+// 8b. Nueva asignación masiva multi-rubro (Carrito por departamento)
 if (typeof supervisorController.asignarTrabajoMasivo === 'function') {
   router.post('/asignar-masivo', verificarAuth, supervisorController.asignarTrabajoMasivo);
 }
 
-// ✏️ 9. Editar asignación existente
+// 🛠️ 8c. Actividades Provisionales / Adicionales
+if (typeof supervisorController.crearActividadProvisional === 'function') {
+  router.post('/provisionales', verificarAuth, supervisorController.crearActividadProvisional);
+}
+
+if (typeof supervisorController.obtenerActividadesProvisionales === 'function') {
+  router.get('/provisionales', verificarAuth, supervisorController.obtenerActividadesProvisionales);
+}
+
+// 9. Editar asignación existente
 if (typeof supervisorController.editarAsignacion === 'function') {
   router.put('/asignaciones/:id', verificarAuth, supervisorController.editarAsignacion);
 }
 
-// 🗑️ 10. Eliminar asignación por ID
+// 10. Eliminar asignación por ID
 if (typeof supervisorController.eliminarAsignacion === 'function') {
   router.delete('/asignaciones/:id', verificarAuth, supervisorController.eliminarAsignacion);
 }
 
-// 📊 11. Rutas de Presupuesto x Departamento y Matriz de Avance
+// 11. Rutas de Presupuesto x Departamento y Matriz de Avance
 if (typeof supervisorController.obtenerPresupuestoYSaldosDpto === 'function') {
   router.get('/paus/:pauId/presupuesto-saldos', verificarAuth, supervisorController.obtenerPresupuestoYSaldosDpto);
 }

@@ -220,18 +220,13 @@ exports.obtenerAsignaciones = async (req, res) => {
 };
 
 /**
- * 8. Crear nueva asignación
+ * 8. Crear nueva asignación (CON VALIDACIÓN ESTRICTA DE PRESUPUESTO)
  */
 exports.asignarTrabajo = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
   const rawSecundario = req.body.tecnico_secundario_id ?? req.body.tecnico_secundario ?? req.body.tecnicoSecundarioId;
   
-  const supervisorId = req.user?.id || 
-                       req.usuario?.id || 
-                       req.user?.usuario_id || 
-                       req.usuario?.usuario_id || 
-                       req.body.supervisor_id || 
-                       req.body.creado_por;
+  const supervisorId = req.user?.id || req.usuario?.id || req.user?.usuario_id || req.usuario?.usuario_id || req.body.supervisor_id || req.body.creado_por;
 
   let listaAcompanantes = [];
   if (Array.isArray(req.body.acompanantes)) {
@@ -263,6 +258,42 @@ exports.asignarTrabajo = async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // 🔴 RESTRICCIÓN DE PRESUPUESTO Y SALDO
+    const querySaldo = `
+      SELECT 
+        COALESCE(pd.cantidad_presupuestada, 0) AS pres,
+        COALESCE((
+          SELECT SUM(pa.cantidad_presupuestada) 
+          FROM pau_actividades pa 
+          WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
+            AND CAST(pa.actividad_id AS TEXT) = CAST($2 AS TEXT)
+        ), 0) AS asignado
+      FROM presupuesto_departamento pd
+      WHERE CAST(pd.pau_id AS TEXT) = CAST($1 AS TEXT)
+        AND CAST(pd.actividad_id AS TEXT) = CAST($2 AS TEXT);
+    `;
+
+    const resSaldo = await client.query(querySaldo, [pau_id, actividad_id]);
+
+    if (resSaldo.rows.length === 0 || parseFloat(resSaldo.rows[0].pres) <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: 'No se puede asignar: El rubro seleccionado no tiene un presupuesto asignado para este departamento.' 
+      });
+    }
+
+    const pres = parseFloat(resSaldo.rows[0].pres);
+    const asignado = parseFloat(resSaldo.rows[0].asignado);
+    const saldoDisponible = pres - asignado;
+    const cantidadSolicitada = parseFloat(cantidad);
+
+    if (cantidadSolicitada > saldoDisponible) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: `Acción bloqueada: La cantidad solicitada (${cantidadSolicitada}) supera el saldo disponible (${saldoDisponible.toFixed(2)}).` 
+      });
+    }
+
     let secId = null;
     if (listaAcompanantes.length > 0) {
       const parsedFirst = parseInt(listaAcompanantes[0], 10);
@@ -277,21 +308,12 @@ exports.asignarTrabajo = async (req, res) => {
 
     const fechaAsigFinal = fecha_asignacion || fecha_inicio || new Date().toISOString().split('T')[0];
 
-    await client.query(`
-      ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;
-    `);
+    await client.query(`ALTER TABLE pau_actividades ADD COLUMN IF NOT EXISTS creado_por INT;`);
 
     const query = `
       INSERT INTO pau_actividades (
-        pau_id,
-        actividad_id,
-        tecnico_id,
-        tecnico_secundario_id,
-        cantidad_presupuestada,
-        observaciones,
-        fecha_inicio,
-        fecha_fin,
-        creado_por
+        pau_id, actividad_id, tecnico_id, tecnico_secundario_id,
+        cantidad_presupuestada, observaciones, fecha_inicio, fecha_fin, creado_por
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *;
@@ -302,7 +324,7 @@ exports.asignarTrabajo = async (req, res) => {
       parseInt(actividad_id, 10),
       parseInt(tecnico_id, 10),
       secId,
-      parseFloat(cantidad),
+      cantidadSolicitada,
       obsFinales,
       fechaAsigFinal,
       fecha_fin || null,
@@ -342,7 +364,6 @@ exports.asignarTrabajo = async (req, res) => {
     client.release();
   }
 };
-
 /**
  * 9. Editar asignación existente
  */
@@ -493,7 +514,7 @@ exports.eliminarAsignacion = async (req, res) => {
 };
 
 /**
- * 11. Crear asignaciones masivas
+ * 11. Asignaciones masivas (CON VALIDACIÓN ESTRICTA DE PRESUPUESTO)
  */
 exports.asignarTrabajoMasivo = async (req, res) => {
   const {
@@ -515,6 +536,44 @@ exports.asignarTrabajoMasivo = async (req, res) => {
 
   try {
     await client.query('BEGIN');
+
+    // 🔴 VALIDAR PRESUPUESTO DE CADA RUBRO EN EL LOTE ANTES DE INSERTAR
+    for (const item of actividades) {
+      const querySaldo = `
+        SELECT 
+          COALESCE(pd.cantidad_presupuestada, 0) AS pres,
+          COALESCE((
+            SELECT SUM(pa.cantidad_presupuestada) 
+            FROM pau_actividades pa 
+            WHERE CAST(pa.pau_id AS TEXT) = CAST($1 AS TEXT) 
+              AND CAST(pa.actividad_id AS TEXT) = CAST($2 AS TEXT)
+          ), 0) AS asignado
+        FROM presupuesto_departamento pd
+        WHERE CAST(pd.pau_id AS TEXT) = CAST($1 AS TEXT)
+          AND CAST(pd.actividad_id AS TEXT) = CAST($2 AS TEXT);
+      `;
+
+      const resSaldo = await client.query(querySaldo, [pau_id, item.actividad_id]);
+
+      if (resSaldo.rows.length === 0 || parseFloat(resSaldo.rows[0].pres) <= 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ 
+          error: `Acción bloqueada: La actividad ID ${item.actividad_id} no tiene un presupuesto ingresado.` 
+        });
+      }
+
+      const pres = parseFloat(resSaldo.rows[0].pres);
+      const asignado = parseFloat(resSaldo.rows[0].asignado);
+      const saldoDisponible = pres - asignado;
+      const cantidadSolicitada = parseFloat(item.cantidad);
+
+      if (cantidadSolicitada > saldoDisponible) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ 
+          error: `Acción bloqueada: Para un rubro del lote, la cantidad (${cantidadSolicitada}) supera el disponible (${saldoDisponible.toFixed(2)}).` 
+        });
+      }
+    }
 
     let secId = null;
     const listaAcomp = Array.isArray(acompanantes) ? acompanantes : [];

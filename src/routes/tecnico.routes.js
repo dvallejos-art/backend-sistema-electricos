@@ -81,7 +81,7 @@ const obtenerPausHandler = async (req, res) => {
 router.get('/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 router.get('/:id/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 
-// 3. Obtener Actividades Asignadas (Soporte completo para Líder y TODOS los acompañantes)
+// 3. Obtener Actividades Asignadas (SE AGREGA EXPLICITAMENTE LA COLUMNA OBSERVACIONES)
 const obtenerActividadesHandler = async (req, res) => {
   const pau_id = req.params.pau_id || req.params.idPau;
   const tecnicoId = req.params.tecnicoId || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
@@ -95,6 +95,11 @@ const obtenerActividadesHandler = async (req, res) => {
         pa.actividad_id,
         pa.tecnico_id,
         pa.tecnico_secundario_id,
+        
+        /* 🟢 CORRECCIÓN CLAVE: Seleccionar observaciones guardadas por el supervisor/admin */
+        pa.observaciones,
+        pa.observaciones AS observaciones_supervisor,
+
         u1.nombre AS tecnico_lider_nombre,
         u2.nombre AS tecnico_secundario_nombre,
         ac.descripcion AS actividad,
@@ -270,7 +275,7 @@ router.post('/registrar-avance', verificarAuth, async (req, res) => {
   }
 });
 
-// 5. Historial de Avances del Técnico (Muestra los avances registrados para su cuadrilla)
+// 5. Historial de Avances del Técnico
 const obtenerHistorialHandler = async (req, res) => {
   const tecnicoId = req.params.id || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
 

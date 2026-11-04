@@ -1,6 +1,5 @@
 // src/controllers/supervisor.controller.js
 const pool = require('../config/db');
-
 /**
  * 1. Obtener lista de proyectos
  */
@@ -259,7 +258,6 @@ exports.asignarTrabajo = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // RESTRICCIÓN DE PRESUPUESTO Y SALDO
     const querySaldo = `
       SELECT 
         COALESCE(pd.cantidad_presupuestada, 0) AS pres,
@@ -812,7 +810,7 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
 };
 
 /**
- * 15. Crear actividad provisional (Soporta departamento opcional / general por edificio)
+ * 15. Crear actividad provisional (Guarda el comentario tal cual lo ingresa el Admin/Supervisor)
  */
 exports.crearActividadProvisional = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
@@ -865,7 +863,8 @@ exports.crearActividadProvisional = async (req, res) => {
       if (!isNaN(parsedFirst)) secId = parsedFirst;
     }
 
-    const obsTexto = observaciones ? `[PROVISIONAL] ${observaciones.trim()}` : '[PROVISIONAL]';
+    // Guarda el motivo o comentario ingresado por el supervisor sin prefijos
+    const obsTexto = observaciones ? observaciones.trim() : '';
 
     const query = `
       INSERT INTO pau_actividades (
@@ -921,7 +920,7 @@ exports.crearActividadProvisional = async (req, res) => {
 };
 
 /**
- * 16. Obtener listado de actividades provisionales (Completo)
+ * 16. Obtener listado de actividades provisionales (Incluye observaciones para el SuperAdmin/Supervisor)
  */
 exports.obtenerActividadesProvisionales = async (req, res) => {
   try {
@@ -950,7 +949,7 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
           FROM registros_avance ra
           WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
         ), 0) AS cantidad_ejecutada,
-        pa.observaciones,
+        pa.observaciones, -- 👈 ENTREGA EL COMENTARIO AL SUPERVISOR Y SUPERADMIN
         CASE 
           WHEN COALESCE((
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))

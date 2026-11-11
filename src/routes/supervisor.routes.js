@@ -1,6 +1,7 @@
 // src/routes/supervisor.routes.js
 const express = require('express');
 const router = express.Router();
+const pool = require('../config/db'); // Importado para ejecutar la limpieza masiva en BD
 const supervisorController = require('../controllers/supervisor.controller');
 
 // 🔒 Middleware para verificar autenticación y token JWT (DEBE IR ANTES DE USARSE)
@@ -82,6 +83,37 @@ if (typeof supervisorController.editarAsignacion === 'function') {
 if (typeof supervisorController.eliminarAsignacion === 'function') {
   router.delete('/asignaciones/:id', verificarAuth, supervisorController.eliminarAsignacion);
 }
+
+// 🗑️ 10b. VACIAR TODAS LAS ASIGNACIONES (EXCLUSIVO SUPER ADMINISTRADOR)
+router.delete('/asignaciones-vaciar-todo', verificarAuth, async (req, res) => {
+  try {
+    const usuario = req.user || req.usuario || {};
+    const rol = String(usuario.rol || '').toUpperCase().trim();
+    const nombre = String(usuario.nombre || '').toLowerCase().trim();
+
+    // Validación estricta de Super Administrador
+    const esSuperAdmin = rol === 'SUPERADMIN' || rol === 'SUPER_ADMIN' || rol === 'ADMIN' || nombre === 'admin';
+
+    if (!esSuperAdmin) {
+      return res.status(403).json({
+        error: 'Acceso denegado: Esta acción es exclusiva del Super Administrador.'
+      });
+    }
+
+    // Ejecutamos limpieza en orden para respetar llaves foráneas (Foreign Keys)
+    await pool.query('BEGIN');
+    await pool.query('DELETE FROM registros_avance');
+    await pool.query('DELETE FROM pau_actividades_cuadrilla');
+    await pool.query('DELETE FROM pau_actividades');
+    await pool.query('COMMIT');
+
+    res.json({ mensaje: 'Todas las asignaciones y avances han sido eliminados. Sistema listo desde cero.' });
+  } catch (err) {
+    await pool.query('ROLLBACK');
+    console.error('Error al vaciar asignaciones:', err);
+    res.status(500).json({ error: 'No se pudo realizar el borrado masivo: ' + err.message });
+  }
+});
 
 // 11. Rutas de Presupuesto x Departamento y Matriz de Avance
 if (typeof supervisorController.obtenerPresupuestoYSaldosDpto === 'function') {

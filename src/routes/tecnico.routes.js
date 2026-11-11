@@ -48,14 +48,43 @@ const obtenerProyectosHandler = async (req, res) => {
 router.get('/proyectos', verificarAuth, obtenerProyectosHandler);
 router.get('/:id/proyectos', verificarAuth, obtenerProyectosHandler);
 
-// 2. Obtener Departamentos/PAUs del Proyecto asignados al Técnico (Líder o Cuadrilla)
+// 2. Obtener Departamentos/PAUs del Proyecto con el indicador `completado`
 const obtenerPausHandler = async (req, res) => {
   const { idProyecto } = req.params;
   const tecnicoId = req.params.id || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
 
   try {
     const query = `
-      SELECT DISTINCT p.id, p.codigo, COALESCE(p.nombre, p.codigo) AS nombre
+      SELECT DISTINCT 
+        p.id, 
+        p.codigo, 
+        COALESCE(p.nombre, p.codigo) AS nombre,
+        
+        -- 🟢 CÁLCULO DE COMPLETADO: Retorna TRUE si el técnico no tiene saldo pendiente en este PAU
+        NOT EXISTS (
+          SELECT 1 
+          FROM pau_actividades pa2
+          WHERE CAST(pa2.pau_id AS TEXT) = CAST(p.id AS TEXT)
+            AND (
+              CAST(pa2.tecnico_id AS TEXT) = CAST($2 AS TEXT)
+              OR CAST(pa2.tecnico_secundario_id AS TEXT) = CAST($2 AS TEXT)
+              OR EXISTS (
+                SELECT 1 FROM pau_actividades_cuadrilla pac 
+                WHERE CAST(pac.pau_actividad_id AS TEXT) = CAST(pa2.id AS TEXT)
+                  AND CAST(pac.tecnico_id AS TEXT) = CAST($2 AS TEXT)
+              )
+            )
+            AND GREATEST(
+              CAST(COALESCE(pa2.cantidad_presupuestada, 0) AS NUMERIC) - COALESCE(
+                (
+                  SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
+                  FROM registros_avance ra
+                  WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa2.id AS TEXT)
+                ), 0
+              ), 0
+            ) > 0.001
+        ) AS completado
+
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)
       WHERE CAST(p.proyecto_id AS TEXT) = CAST($1 AS TEXT)
@@ -81,7 +110,7 @@ const obtenerPausHandler = async (req, res) => {
 router.get('/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 router.get('/:id/proyectos/:idProyecto/paus', verificarAuth, obtenerPausHandler);
 
-// 3. Obtener Actividades Asignadas (SE AGREGA EXPLICITAMENTE LA COLUMNA OBSERVACIONES)
+// 3. Obtener Actividades Asignadas (Con observaciones y fecha de último avance)
 const obtenerActividadesHandler = async (req, res) => {
   const pau_id = req.params.pau_id || req.params.idPau;
   const tecnicoId = req.params.tecnicoId || (req.user ? req.user.id : (req.usuario ? req.usuario.id : req.query.tecnico_id));
@@ -96,7 +125,6 @@ const obtenerActividadesHandler = async (req, res) => {
         pa.tecnico_id,
         pa.tecnico_secundario_id,
         
-        /* 🟢 CORRECCIÓN CLAVE: Seleccionar observaciones guardadas por el supervisor/admin */
         pa.observaciones,
         pa.observaciones AS observaciones_supervisor,
 
@@ -128,7 +156,14 @@ const obtenerActividadesHandler = async (req, res) => {
               WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
             ), 0
           ), 0
-        ) AS cantidad_disponible
+        ) AS cantidad_disponible,
+
+        -- 🟢 FECHA DEL ÚLTIMO AVANCE REGISTRADO (Para la regla del día siguiente)
+        (
+          SELECT MAX(ra.fecha_registro) 
+          FROM registros_avance ra 
+          WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
+        ) AS fecha_ultimo_avance
 
       FROM pau_actividades pa
       JOIN paus p ON CAST(p.id AS TEXT) = CAST(pa.pau_id AS TEXT)

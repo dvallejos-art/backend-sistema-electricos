@@ -1,5 +1,6 @@
 // src/controllers/supervisor.controller.js
 const pool = require('../config/db');
+
 /**
  * 1. Obtener lista de proyectos
  */
@@ -810,7 +811,7 @@ exports.obtenerAvanceMatrizPisos = async (req, res) => {
 };
 
 /**
- * 15. Crear actividad provisional (Guarda el comentario tal cual lo ingresa el Admin/Supervisor)
+ * 15. Crear actividad provisional
  */
 exports.crearActividadProvisional = async (req, res) => {
   const tecnico_id = req.body.tecnico_id || req.body.tecnicoId;
@@ -863,7 +864,6 @@ exports.crearActividadProvisional = async (req, res) => {
       if (!isNaN(parsedFirst)) secId = parsedFirst;
     }
 
-    // Guarda el motivo o comentario ingresado por el supervisor sin prefijos
     const obsTexto = observaciones ? observaciones.trim() : '';
 
     const query = `
@@ -920,7 +920,7 @@ exports.crearActividadProvisional = async (req, res) => {
 };
 
 /**
- * 16. Obtener listado de actividades provisionales (Incluye observaciones para el SuperAdmin/Supervisor)
+ * 16. Obtener listado de actividades provisionales
  */
 exports.obtenerActividadesProvisionales = async (req, res) => {
   try {
@@ -949,7 +949,7 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
           FROM registros_avance ra
           WHERE CAST(ra.pau_actividad_id AS TEXT) = CAST(pa.id AS TEXT)
         ), 0) AS cantidad_ejecutada,
-        pa.observaciones, -- 👈 ENTREGA EL COMENTARIO AL SUPERVISOR Y SUPERADMIN
+        pa.observaciones,
         CASE 
           WHEN COALESCE((
             SELECT SUM(CAST(ra.cantidad_ejecutada AS NUMERIC))
@@ -977,84 +977,7 @@ exports.obtenerActividadesProvisionales = async (req, res) => {
     const result = await pool.query(query);
     res.json(result.rows);
   } catch (err) {
-    console.error('Error al obtener provisionales:', err);
+    console.error('Error al obtener actividades provisionales:', err);
     res.status(500).json({ error: err.message });
-  }
-};
-
-/**
- * 17. Eliminar departamento (PAU) y su presupuesto
- */
-exports.eliminarPau = async (req, res) => {
-  const { idPau } = req.params;
-  const client = await pool.connect();
-
-  try {
-    await client.query('BEGIN');
-
-    await client.query(
-      `DELETE FROM presupuesto_departamento WHERE CAST(pau_id AS TEXT) = CAST($1 AS TEXT);`,
-      [idPau]
-    );
-
-    const result = await client.query(
-      `DELETE FROM paus WHERE CAST(id AS TEXT) = CAST($1 AS TEXT);`,
-      [idPau]
-    );
-
-    await client.query('COMMIT');
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'El departamento no existe o ya fue eliminado.' });
-    }
-
-    res.json({ mensaje: 'Departamento y presupuesto eliminados correctamente.' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error al eliminar departamento:', err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-};
-
-/**
- * 18. Eliminar actividad provisional
- */
-exports.eliminarActividadProvisional = async (req, res) => {
-  const { id } = req.params;
-  const client = await pool.connect();
-
-  try {
-    await client.query('BEGIN');
-
-    await client.query(
-      `DELETE FROM pau_actividades_cuadrilla WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
-      [id]
-    );
-
-    await client.query(
-      `DELETE FROM registros_avance WHERE CAST(pau_actividad_id AS TEXT) = CAST($1 AS TEXT);`,
-      [id]
-    );
-
-    const result = await client.query(
-      `DELETE FROM pau_actividades WHERE CAST(id AS TEXT) = CAST($1 AS TEXT) AND es_provisional = TRUE;`,
-      [id]
-    );
-
-    await client.query('COMMIT');
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'La actividad provisional no existe o ya fue eliminada.' });
-    }
-
-    res.json({ mensaje: 'Actividad provisional eliminada correctamente.' });
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error al eliminar actividad provisional:', err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
   }
 };

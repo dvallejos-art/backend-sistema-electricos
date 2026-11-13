@@ -74,6 +74,11 @@ if (typeof supervisorController.obtenerActividadesProvisionales === 'function') 
   router.get('/provisionales', verificarAuth, supervisorController.obtenerActividadesProvisionales);
 }
 
+// 🗑️ Eliminar actividad provisional por ID (Habilitado para supervisores y admin en cascada)
+if (typeof supervisorController.eliminarAsignacion === 'function') {
+  router.delete('/provisionales/:id', verificarAuth, supervisorController.eliminarAsignacion);
+}
+
 // 9. Editar asignación existente
 if (typeof supervisorController.editarAsignacion === 'function') {
   router.put('/asignaciones/:id', verificarAuth, supervisorController.editarAsignacion);
